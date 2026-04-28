@@ -1,0 +1,12 @@
+{
+    "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+    "productName": "meetily-dev",
+    "identifier": "com.meetily.ai.dev",
+    "app": {
+        "windows": [
+            {
+                "title": "meetily (dev)"
+            }
+        ]
+    }
+}

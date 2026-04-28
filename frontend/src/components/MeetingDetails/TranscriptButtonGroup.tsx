@@ -3,9 +3,11 @@
 import { useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, FolderOpen, RefreshCw } from 'lucide-react';
+import { Copy, FolderOpen, RefreshCw, Download } from 'lucide-react';
 import Analytics from '@/lib/analytics';
 import { RetranscribeDialog } from './RetranscribeDialog';
+import { ExportMarkdownDialog } from './ExportMarkdownDialog';
+import { ExportScope } from '@/hooks/meeting-details/useExportOperations';
 import { useConfig } from '@/contexts/ConfigContext';
 
 
@@ -13,6 +15,8 @@ interface TranscriptButtonGroupProps {
   transcriptCount: number;
   onCopyTranscript: () => void;
   onOpenMeetingFolder: () => Promise<void>;
+  onExportMarkdown: (scope: ExportScope) => Promise<void>;
+  hasSummary: boolean;
   meetingId?: string;
   meetingFolderPath?: string | null;
   onRefetchTranscripts?: () => Promise<void>;
@@ -23,15 +27,17 @@ export function TranscriptButtonGroup({
   transcriptCount,
   onCopyTranscript,
   onOpenMeetingFolder,
+  onExportMarkdown,
+  hasSummary,
   meetingId,
   meetingFolderPath,
   onRefetchTranscripts,
 }: TranscriptButtonGroupProps) {
   const { betaFeatures } = useConfig();
   const [showRetranscribeDialog, setShowRetranscribeDialog] = useState(false);
+  const [showExportDialog, setShowExportDialog] = useState(false);
 
   const handleRetranscribeComplete = useCallback(async () => {
-    // Refetch transcripts to show the updated data
     if (onRefetchTranscripts) {
       await onRefetchTranscripts();
     }
@@ -52,6 +58,20 @@ export function TranscriptButtonGroup({
         >
           <Copy />
           <span className="hidden lg:inline">Copy</span>
+        </Button>
+
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            Analytics.trackButtonClick('open_export_dialog', 'meeting_details');
+            setShowExportDialog(true);
+          }}
+          disabled={transcriptCount === 0 && !hasSummary}
+          title={transcriptCount === 0 && !hasSummary ? 'Nothing to export yet' : 'Export to Markdown'}
+        >
+          <Download />
+          <span className="hidden lg:inline">Export</span>
         </Button>
 
         <Button
@@ -84,6 +104,14 @@ export function TranscriptButtonGroup({
           </Button>
         )}
       </ButtonGroup>
+
+      <ExportMarkdownDialog
+        open={showExportDialog}
+        onOpenChange={setShowExportDialog}
+        hasSummary={hasSummary}
+        hasTranscripts={transcriptCount > 0}
+        onExport={onExportMarkdown}
+      />
 
       {betaFeatures.importAndRetranscribe && meetingId && meetingFolderPath && (
         <RetranscribeDialog

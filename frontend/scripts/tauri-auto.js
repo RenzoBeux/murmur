@@ -47,8 +47,13 @@ if (platform === 'linux' && feature === 'cuda') {
   env.CMAKE_POSITION_INDEPENDENT_CODE = 'ON';
 }
 
-// Build the tauri command
+// Build the tauri command. For `dev`, layer tauri.dev.conf.json on top of
+// tauri.conf.json so the dev build gets its own identifier (and AppData
+// folder) and won't collide with an installed release build.
 let tauriCmd = `tauri ${command}`;
+if (command === 'dev') {
+  tauriCmd += ' -c src-tauri/tauri.dev.conf.json';
+}
 if (feature && feature !== 'none') {
   tauriCmd += ` -- --features ${feature}`;
   console.log(`🚀 Running: tauri ${command} with features: ${feature}`);

@@ -2,6 +2,7 @@ import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { RefObject } from 'react';
 import { Transcript, Summary } from '@/types';
 import { BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummaryView';
+import { formatSpeaker } from '@/lib/speakerLabel';
 
 export interface MeetingMarkdownContext {
   id: string;
@@ -47,7 +48,11 @@ export function buildTranscriptMarkdown(
   const header = `# Transcript of the Meeting: ${meeting.id} - ${meetingTitle ?? meeting.title}\n\n`;
   const date = `## Date: ${new Date(meeting.created_at).toLocaleDateString()}\n\n`;
   const body = transcripts
-    .map(t => `${formatRecordingTimestamp(t.audio_start_time, t.timestamp)} ${t.text}  `)
+    .map(t => {
+      const speaker = formatSpeaker(t.speaker);
+      const speakerPrefix = speaker ? ` **${speaker.label}:**` : '';
+      return `${formatRecordingTimestamp(t.audio_start_time, t.timestamp)}${speakerPrefix} ${t.text}  `;
+    })
     .join('\n');
   return header + date + body;
 }

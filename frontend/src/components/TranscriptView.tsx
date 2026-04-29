@@ -6,6 +6,7 @@ import { ConfidenceIndicator } from './ConfidenceIndicator';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { RecordingStatusBar } from './RecordingStatusBar';
 import { motion, AnimatePresence } from 'framer-motion';
+import { formatSpeaker } from '@/lib/speakerLabel';
 
 interface TranscriptViewProps {
   transcripts: Transcript[];
@@ -304,6 +305,14 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({ transcripts, isR
                   )}
                 </TooltipContent>
               </Tooltip>
+              {(() => {
+                const sp = formatSpeaker(transcript.speaker);
+                return sp ? (
+                  <span className={`text-xs px-1.5 py-0.5 rounded mt-1 flex-shrink-0 ${sp.className}`}>
+                    {sp.label}
+                  </span>
+                ) : null;
+              })()}
               <div className="flex-1">
                 {isStreaming ? (
                   // Streaming transcript - show in bubble (full width)

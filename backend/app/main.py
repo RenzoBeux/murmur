@@ -63,6 +63,8 @@ class Transcript(BaseModel):
     audio_start_time: Optional[float] = None
     audio_end_time: Optional[float] = None
     duration: Optional[float] = None
+    # Source-faithful speaker tag ("mic"/"system"); diarization may overwrite later.
+    speaker: Optional[str] = None
 
 class MeetingResponse(BaseModel):
     id: str
@@ -543,7 +545,7 @@ async def save_transcript(request: SaveTranscriptRequest):
         # Save the meeting with folder path (if provided)
         await db.save_meeting(meeting_id, request.meeting_title, folder_path=request.folder_path)
 
-        # Save each transcript segment with NEW timestamp fields for playback sync
+        # Save each transcript segment with timestamp fields and speaker tag
         for transcript in request.transcripts:
             await db.save_meeting_transcript(
                 meeting_id=meeting_id,
@@ -552,10 +554,10 @@ async def save_transcript(request: SaveTranscriptRequest):
                 summary="",
                 action_items="",
                 key_points="",
-                # NEW: Recording-relative timestamps for audio-transcript synchronization
                 audio_start_time=transcript.audio_start_time,
                 audio_end_time=transcript.audio_end_time,
-                duration=transcript.duration
+                duration=transcript.duration,
+                speaker=transcript.speaker,
             )
 
         logger.info("Transcripts saved successfully")

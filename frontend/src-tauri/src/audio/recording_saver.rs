@@ -22,6 +22,9 @@ pub struct TranscriptSegment {
     pub display_time: String,   // Formatted time for display like "[02:15]"
     pub confidence: f32,
     pub sequence_id: u64,
+    // Source-faithful speaker tag ("mic"/"system" today; diarization may overwrite).
+    #[serde(default)]
+    pub speaker: String,
 }
 
 /// Meeting metadata structure
@@ -129,6 +132,7 @@ impl RecordingSaver {
             display_time: "[00:00]".to_string(),
             confidence: 1.0,
             sequence_id: 0,
+            speaker: String::new(),
         };
         self.add_transcript_segment(segment);
     }

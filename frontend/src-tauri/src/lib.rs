@@ -631,6 +631,10 @@ pub fn run() {
             api::api_save_custom_openai_config,
             api::api_get_custom_openai_config,
             api::api_test_custom_openai_connection,
+            // Meeting chat commands
+            api::chat_api::api_send_chat_message,
+            api::chat_api::api_get_chat_history,
+            api::chat_api::api_clear_chat_history,
             // Summary commands
             summary::api_process_transcript,
             summary::api_get_summary,

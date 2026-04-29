@@ -88,6 +88,13 @@ class SchemaValidator:
                 ('elevenLabsApiKey', 'TEXT', ''),
                 ('groqApiKey', 'TEXT', ''),
                 ('openaiApiKey', 'TEXT', '')
+            ],
+            'chat_messages': [
+                ('id', 'TEXT', 'PRIMARY KEY'),
+                ('meeting_id', 'TEXT', 'NOT NULL'),
+                ('role', 'TEXT', 'NOT NULL'),
+                ('content', 'TEXT', 'NOT NULL'),
+                ('created_at', 'TEXT', 'NOT NULL')
             ]
         }
 

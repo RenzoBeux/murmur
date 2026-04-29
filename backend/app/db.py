@@ -156,6 +156,22 @@ class DatabaseManager:
                 )
             """)
 
+            # Create chat_messages table for per-meeting Q&A history
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id TEXT PRIMARY KEY,
+                    meeting_id TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (meeting_id) REFERENCES meetings(id)
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_chat_messages_meeting
+                ON chat_messages(meeting_id, created_at)
+            """)
+
             conn.commit()
 
     @asynccontextmanager
@@ -505,7 +521,10 @@ class DatabaseManager:
                     
                     # Delete from transcripts
                     await conn.execute("DELETE FROM transcripts WHERE meeting_id = ?", (meeting_id,))
-                    
+
+                    # Delete chat messages
+                    await conn.execute("DELETE FROM chat_messages WHERE meeting_id = ?", (meeting_id,))
+
                     # Delete from meetings
                     cursor = await conn.execute("DELETE FROM meetings WHERE id = ?", (meeting_id,))
                     
@@ -877,6 +896,70 @@ class DatabaseManager:
             await conn.execute(f"UPDATE settings SET {api_key_name} = NULL WHERE id = '1'")
             await conn.commit()
     
+    async def add_chat_message(self, meeting_id: str, role: str, content: str) -> dict:
+        """Append a chat message for a meeting and return the persisted row."""
+        if role not in ("user", "assistant"):
+            raise ValueError(f"Invalid chat role: {role}")
+        if not meeting_id or not meeting_id.strip():
+            raise ValueError("meeting_id cannot be empty")
+        if content is None:
+            raise ValueError("content cannot be None")
+
+        import uuid
+        message_id = str(uuid.uuid4())
+        now = datetime.utcnow().isoformat()
+
+        async with self._get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO chat_messages (id, meeting_id, role, content, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (message_id, meeting_id, role, content, now),
+            )
+            await conn.commit()
+
+        return {
+            "id": message_id,
+            "meeting_id": meeting_id,
+            "role": role,
+            "content": content,
+            "created_at": now,
+        }
+
+    async def get_chat_messages(self, meeting_id: str) -> list:
+        """Return all chat messages for a meeting in chronological order."""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT id, meeting_id, role, content, created_at
+                FROM chat_messages
+                WHERE meeting_id = ?
+                ORDER BY created_at ASC
+                """,
+                (meeting_id,),
+            )
+            rows = await cursor.fetchall()
+            return [
+                {
+                    "id": row[0],
+                    "meeting_id": row[1],
+                    "role": row[2],
+                    "content": row[3],
+                    "created_at": row[4],
+                }
+                for row in rows
+            ]
+
+    async def clear_chat_messages(self, meeting_id: str) -> int:
+        """Delete all chat messages for a meeting. Returns number of rows removed."""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM chat_messages WHERE meeting_id = ?", (meeting_id,)
+            )
+            await conn.commit()
+            return cursor.rowcount
+
     async def update_meeting_summary(self, meeting_id: str, summary: dict):
         """Update a meeting's summary"""
         now = datetime.utcnow().isoformat()

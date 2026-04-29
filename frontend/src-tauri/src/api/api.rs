@@ -236,7 +236,7 @@ async fn get_server_address<R: Runtime>(_app: &AppHandle<R>) -> Result<String, S
 }
 
 // Generic API call function with optional authentication
-async fn make_api_request<R: Runtime, T: for<'de> Deserialize<'de>>(
+pub(crate) async fn make_api_request<R: Runtime, T: for<'de> Deserialize<'de>>(
     app: &AppHandle<R>,
     endpoint: &str,
     method: &str,

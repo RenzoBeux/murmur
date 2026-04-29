@@ -4,6 +4,14 @@ export interface Message {
   timestamp: string;
 }
 
+export interface ChatMessage {
+  id: string;
+  meeting_id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  created_at: string;
+}
+
 export interface Transcript {
   id: string;
   text: string;

@@ -10,6 +10,7 @@ from db import DatabaseManager
 import json
 from threading import Lock
 from transcript_processor import TranscriptProcessor
+from chat_processor import ChatProcessor
 import time
 
 # Load environment variables
@@ -167,6 +168,22 @@ class SummaryProcessor:
 
 # Initialize processor
 processor = SummaryProcessor()
+chat_processor = ChatProcessor()
+
+
+class ChatMessageResponse(BaseModel):
+    id: str
+    meeting_id: str
+    role: str
+    content: str
+    created_at: str
+
+
+class SendChatMessageRequest(BaseModel):
+    meeting_id: str
+    message: str
+    provider: str
+    model: str
 
 # New meeting management endpoints
 @app.get("/get-meetings", response_model=List[MeetingResponse])
@@ -629,6 +646,64 @@ async def search_transcripts(request: SearchRequest):
     except Exception as e:
         logger.error(f"Error searching transcripts: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/chat-meeting", response_model=ChatMessageResponse)
+async def chat_meeting(request: SendChatMessageRequest):
+    """Send a question about a meeting and return the assistant reply.
+
+    Persists both the user message and assistant reply in chat_messages.
+    Uses the globally-configured LLM provider (same as summary generation).
+    """
+    if not request.meeting_id or not request.meeting_id.strip():
+        raise HTTPException(status_code=400, detail="meeting_id is required")
+    if not request.message or not request.message.strip():
+        raise HTTPException(status_code=400, detail="message cannot be empty")
+
+    try:
+        history = await db.get_chat_messages(request.meeting_id)
+        await db.add_chat_message(request.meeting_id, "user", request.message)
+
+        try:
+            answer = await chat_processor.answer(
+                meeting_id=request.meeting_id,
+                user_message=request.message,
+                history=history,
+                provider=request.provider,
+                model_name=request.model,
+            )
+        except ValueError as ve:
+            logger.error(f"Chat config error for {request.meeting_id}: {ve}")
+            raise HTTPException(status_code=400, detail=str(ve))
+
+        assistant_msg = await db.add_chat_message(request.meeting_id, "assistant", answer)
+        return assistant_msg
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in chat_meeting for {request.meeting_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Chat failed: {e}")
+
+
+@app.get("/chat-meeting/{meeting_id}", response_model=List[ChatMessageResponse])
+async def get_chat_history(meeting_id: str):
+    """Return all chat messages for a meeting in chronological order."""
+    try:
+        return await db.get_chat_messages(meeting_id)
+    except Exception as e:
+        logger.error(f"Error getting chat history for {meeting_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/chat-meeting/{meeting_id}")
+async def clear_chat_history(meeting_id: str):
+    """Delete all chat messages for a meeting."""
+    try:
+        removed = await db.clear_chat_messages(meeting_id)
+        return {"status": "success", "removed": removed}
+    except Exception as e:
+        logger.error(f"Error clearing chat history for {meeting_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.on_event("shutdown")
 async def shutdown_event():

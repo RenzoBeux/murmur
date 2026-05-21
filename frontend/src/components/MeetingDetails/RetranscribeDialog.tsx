@@ -63,6 +63,7 @@ export function RetranscribeDialog({
   const [progress, setProgress] = useState<RetranscriptionProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedLang, setSelectedLang] = useState(selectedLanguage || 'auto');
+  const [showConfirm, setShowConfirm] = useState(false);
 
   // Use centralized model fetching hook
   const {
@@ -111,6 +112,7 @@ export function RetranscribeDialog({
       setIsProcessing(false);
       setProgress(null);
       setError(null);
+      setShowConfirm(false);
       setSelectedLang(selectedLanguage || 'auto');
 
       // Fetch available models using centralized hook
@@ -202,6 +204,7 @@ export function RetranscribeDialog({
       return;
     }
 
+    setShowConfirm(false);
     setIsProcessing(true);
     setError(null);
     setProgress(null);
@@ -394,7 +397,7 @@ export function RetranscribeDialog({
                 Cancel
               </Button>
               <Button
-                onClick={handleStartRetranscription}
+                onClick={() => setShowConfirm(true)}
                 className="bg-blue-600 hover:bg-blue-700"
                 disabled={!meetingFolderPath}
               >
@@ -427,6 +430,32 @@ export function RetranscribeDialog({
           )}
         </DialogFooter>
       </DialogContent>
+
+      <Dialog open={showConfirm} onOpenChange={setShowConfirm}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertCircle className="h-5 w-5 text-amber-600" />
+              Reset speaker tags?
+            </DialogTitle>
+            <DialogDescription>
+              Retranscribing will replace the current transcript and reset all speaker tags (Me / Them). The audio file is unchanged, but speaker labels will need to be re-applied.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowConfirm(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleStartRetranscription}
+              className="bg-blue-600 hover:bg-blue-700"
+            >
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Yes, Retranscribe
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   );
 }

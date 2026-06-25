@@ -40,11 +40,17 @@ console.log(''); // Empty line for spacing
 const platform = os.platform();
 const env = { ...process.env };
 
-if (platform === 'linux' && feature === 'cuda') {
-  console.log('🐧 Linux/CUDA detected: Setting CMAKE flags for NVIDIA GPU');
-  env.CMAKE_CUDA_ARCHITECTURES = '75';
-  env.CMAKE_CUDA_STANDARD = '17';
-  env.CMAKE_POSITION_INDEPENDENT_CODE = 'ON';
+if (feature === 'cuda') {
+  // Cover current consumer GPUs: 75=Turing (RTX 20xx/GTX 16xx),
+  // 86=Ampere (RTX 30xx), 89=Ada Lovelace (RTX 40xx).
+  // Override with CMAKE_CUDA_ARCHITECTURES env var to pin a single arch
+  // (e.g. "89-real") for faster compiles.
+  env.CMAKE_CUDA_ARCHITECTURES = env.CMAKE_CUDA_ARCHITECTURES || '75;86;89';
+  console.log(`CUDA arch list: ${env.CMAKE_CUDA_ARCHITECTURES}`);
+  if (platform === 'linux') {
+    env.CMAKE_CUDA_STANDARD = '17';
+    env.CMAKE_POSITION_INDEPENDENT_CODE = 'ON';
+  }
 }
 
 // Build the tauri command. For `dev`, layer tauri.dev.conf.json on top of

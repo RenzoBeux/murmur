@@ -69,12 +69,15 @@ function copyAll(sourceDir) {
 }
 
 function triggerSherpaBuild() {
-  console.log('[stage-sherpa-dlls] sherpa DLLs not found; building sherpa-onnx-sys to populate them...');
-  // Build only the sys crate with `shared` to trigger the prebuilt download
-  // in its build.rs. This populates target/sherpa-onnx-prebuilt and copies
-  // the DLLs next to the build artifact.
+  console.log('[stage-sherpa-dlls] sherpa DLLs not found; triggering sherpa-onnx-sys build.rs via meetily check...');
+  // sherpa-onnx-sys is not a workspace member, so cargo refuses
+  // `--features shared` directly on it ("cannot specify features for packages
+  // outside of workspace"). Instead invoke `cargo check` against meetily,
+  // which declares sherpa-onnx with features = ["shared"] in its Cargo.toml —
+  // feature unification propagates "shared" to sherpa-onnx-sys, and its
+  // build.rs runs (which is what downloads the prebuilt archive).
   execSync(
-    'cargo build --release --package sherpa-onnx-sys --no-default-features --features shared',
+    'cargo check --release -p meetily',
     { cwd: WORKSPACE_ROOT, stdio: 'inherit' },
   );
 }

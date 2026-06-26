@@ -292,161 +292,31 @@ impl RecordingManager {
         let recording_duration = self.state.get_active_recording_duration();
         info!("Recording duration from state: {:?}s", recording_duration);
 
-        // Save the recording with actual duration
-        let saved_wav: Option<String> = match self.recording_saver.stop_and_save(app, recording_duration).await {
+        // Save the recording with actual duration.
+        //
+        // NOTE: automatic post-recording speaker diarization was intentionally
+        // removed. It ran sherpa-onnx / ONNX Runtime in-process, and a native
+        // abort there (an ONNX Runtime version mismatch raised an unhandled C++
+        // exception -> `terminate()`/`abort()`) crashed the entire app on every
+        // recording stop. `tokio::task::spawn_blocking` only catches Rust
+        // panics, not foreign C++ aborts, so it could never protect against it.
+        // Diarization is now manual-only, triggered explicitly from the meeting
+        // view (see `diarization::commands::rediarize_meeting`).
+        match self.recording_saver.stop_and_save(app, recording_duration).await {
             Ok(Some(file_path)) => {
                 info!("Recording saved successfully to: {}", file_path);
-                Some(file_path)
             }
             Ok(None) => {
                 debug!("Recording not saved (auto-save disabled or no audio data)");
-                None
             }
             Err(e) => {
                 error!("Failed to save recording: {}", e);
-                None
+                // Don't fail the stop operation if saving fails
             }
-        };
-
-        if let Some(wav_path) = saved_wav {
-            self.run_post_recording_diarization(app, &wav_path).await;
         }
 
         debug!("Recording save operation completed");
         Ok(())
-    }
-
-    /// Run sherpa-onnx speaker diarization on the saved mixed WAV and rewrite
-    /// the persisted transcripts.json with speaker_N tags. This is best-effort:
-    /// any failure is logged and swallowed so it never fails the recording-stop
-    /// flow.
-    ///
-    /// `&mut self` is required because `RecordingManager` contains
-    /// non-`Sync` FFI handles (sherpa-onnx, whisper-rs); holding `&self`
-    /// across an await would force `Sync` on the whole struct.
-    async fn run_post_recording_diarization<R: tauri::Runtime>(
-        &mut self,
-        app: &tauri::AppHandle<R>,
-        wav_path: &str,
-    ) {
-        use tauri::Emitter;
-
-        let enabled = match crate::audio::recording_preferences::load_recording_preferences(app).await {
-            Ok(prefs) => prefs.diarization_enabled,
-            Err(e) => {
-                warn!("Could not load recording prefs for diarization toggle: {e}");
-                true // Default-on per product decision
-            }
-        };
-        if !enabled {
-            debug!("Diarization disabled in preferences — skipping");
-            return;
-        }
-
-        let _ = app.emit(
-            "diarization-progress",
-            serde_json::json!({"status": "starting"}),
-        );
-
-        let paths = match crate::diarization::models::ensure_models(app).await {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("Diarization models unavailable, skipping: {e}");
-                let _ = app.emit(
-                    "diarization-progress",
-                    serde_json::json!({"status": "skipped", "reason": e.to_string()}),
-                );
-                return;
-            }
-        };
-
-        let _ = app.emit(
-            "diarization-progress",
-            serde_json::json!({"status": "running"}),
-        );
-
-        // Silence the local mic regions before clustering so the diarizer only
-        // sees the remote/"them" audio; the mic stream stays "You" (anchored in
-        // the aligner). Ranges come straight from the live "mic"-tagged segments.
-        let mic_ranges_handle = self.recording_saver.transcript_segments_handle();
-        let mic_ranges: Vec<(f64, f64)> = match mic_ranges_handle.lock() {
-            Ok(segs) => segs
-                .iter()
-                .filter(|s| s.speaker == "mic")
-                .map(|s| (s.audio_start_time, s.audio_end_time))
-                .collect(),
-            Err(e) => {
-                warn!("Could not read mic ranges for diarization masking: {e}");
-                Vec::new()
-            }
-        };
-
-        let wav_pb = std::path::PathBuf::from(wav_path);
-        let diar = match tokio::task::spawn_blocking(move || {
-            // Live recordings auto-detect the speaker count; the manual
-            // head-count override is only offered on explicit re-diarization.
-            let engine = crate::diarization::engine::DiarizationEngine::new(&paths, None)?;
-            engine.run_on_file_excluding(&wav_pb, &mic_ranges)
-        })
-        .await
-        {
-            Ok(Ok(segments)) => segments,
-            Ok(Err(e)) => {
-                warn!("Diarization failed: {e}");
-                let _ = app.emit(
-                    "diarization-progress",
-                    serde_json::json!({"status": "error", "reason": e.to_string()}),
-                );
-                return;
-            }
-            Err(join_err) => {
-                warn!("Diarization task panicked: {join_err}");
-                let _ = app.emit(
-                    "diarization-progress",
-                    serde_json::json!({"status": "error", "reason": format!("{join_err}")}),
-                );
-                return;
-            }
-        };
-
-        let _ = app.emit(
-            "diarization-progress",
-            serde_json::json!({"status": "aligning", "segments": diar.len()}),
-        );
-
-        let segments_arc = self.recording_saver.transcript_segments_handle();
-        let updated = {
-            match segments_arc.lock() {
-                Ok(mut segs) => {
-                    crate::diarization::aligner::assign_speakers(&mut segs, &diar);
-                    Some(segs.clone())
-                }
-                Err(e) => {
-                    warn!("Failed to lock transcript segments for diarization rewrite: {e}");
-                    None
-                }
-            }
-        };
-
-        if updated.is_some() {
-            if let Err(e) = self.recording_saver.rewrite_transcripts_now() {
-                warn!("Failed to persist diarized transcripts.json: {e}");
-            }
-        }
-
-        if let Some(segs) = updated {
-            let speaker_count = crate::diarization::aligner::unique_speakers(&segs).len();
-            let _ = app.emit("transcript-rediarized", &segs);
-            let _ = app.emit(
-                "diarization-progress",
-                serde_json::json!({"status": "done", "speakers": speaker_count}),
-            );
-            info!(
-                "Diarization complete: {} segments, {} unique speakers",
-                segs.len(),
-                speaker_count
-            );
-        }
     }
 
     /// Stop recording and save audio (legacy method)

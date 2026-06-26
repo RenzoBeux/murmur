@@ -62,7 +62,7 @@ export function TranscriptEditorToolbar({
         title={canMerge ? 'Merge selected segments' : (mergeBlockedReason ?? 'Select ≥2 contiguous segments to merge')}
       >
         <Combine size={14} />
-        <span className="hidden lg:inline ml-1">Merge</span>
+        <span className="hidden @lg:inline ml-1">Merge</span>
       </Button>
 
       {hasSelection && onReassignSpeaker ? (
@@ -72,7 +72,7 @@ export function TranscriptEditorToolbar({
           trigger={
             <Button size="sm" variant="outline" title="Reassign speaker on selected segments">
               <Users size={14} />
-              <span className="hidden lg:inline ml-1">Speaker</span>
+              <span className="hidden @lg:inline ml-1">Speaker</span>
             </Button>
           }
         />
@@ -84,7 +84,7 @@ export function TranscriptEditorToolbar({
           title="Select segments first"
         >
           <Users size={14} />
-          <span className="hidden lg:inline ml-1">Speaker</span>
+          <span className="hidden @lg:inline ml-1">Speaker</span>
         </Button>
       )}
 
@@ -96,7 +96,7 @@ export function TranscriptEditorToolbar({
         title={hasSelection ? 'Delete selected segments' : 'Select segments first'}
       >
         <Trash2 size={14} />
-        <span className="hidden lg:inline ml-1">Delete</span>
+        <span className="hidden @lg:inline ml-1">Delete</span>
       </Button>
 
       {hasSelection && (

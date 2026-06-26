@@ -90,7 +90,7 @@ export function SummaryPanel({
   return (
     <div className="flex-1 min-w-0 flex flex-col bg-white overflow-hidden">
       {/* Title area */}
-      <div className="p-4 border-b border-gray-200">
+      <div className="p-4 border-b border-gray-200 @container">
         {/* <EditableTitle
           title={meetingTitle}
           isEditing={isEditingTitle}
@@ -101,7 +101,7 @@ export function SummaryPanel({
 
         {/* Button groups - only show when summary exists */}
         {aiSummary && !isSummaryLoading && (
-          <div className="flex items-center justify-center w-full pt-0 gap-2">
+          <div className="flex flex-wrap items-center justify-center w-full pt-0 gap-2">
             {/* Left-aligned: Summary Generator Button Group */}
             <div className="flex-shrink-0">
               <SummaryGeneratorButtonGroup
@@ -143,7 +143,7 @@ export function SummaryPanel({
       {isSummaryLoading ? (
         <div className="flex flex-col h-full">
           {/* Show button group during generation */}
-          <div className="flex items-center justify-center pt-8 pb-4">
+          <div className="flex items-center justify-center pt-8 pb-4 @container">
             <SummaryGeneratorButtonGroup
               modelConfig={modelConfig}
               setModelConfig={setModelConfig}
@@ -171,7 +171,7 @@ export function SummaryPanel({
       ) : !aiSummary ? (
         <div className="flex flex-col h-full">
           {/* Centered Summary Generator Button Group when no summary */}
-          <div className="flex items-center justify-center pt-8 pb-4">
+          <div className="flex items-center justify-center pt-8 pb-4 @container">
             <SummaryGeneratorButtonGroup
               modelConfig={modelConfig}
               setModelConfig={setModelConfig}

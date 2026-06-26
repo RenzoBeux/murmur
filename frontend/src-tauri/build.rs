@@ -2,6 +2,18 @@
 mod ffmpeg;
 
 fn main() {
+    // Guard: the CUDA and Vulkan ggml backends are mutually exclusive. Enabling
+    // both compiles ggml with GGML_CUDA=ON *and* GGML_VULKAN=ON; at runtime ggml
+    // then registers multiple GPU backends and hard-aborts in ggml-backend.cpp
+    // ("pre-allocated tensor in a backend that cannot run the operation") on the
+    // first transcription, killing the whole app. Fail fast at build time.
+    #[cfg(all(feature = "cuda", feature = "vulkan"))]
+    compile_error!(
+        "features `cuda` and `vulkan` are mutually exclusive: enabling both builds \
+         ggml with two GPU backends, which aborts whisper transcription at runtime. \
+         Build with exactly one GPU backend (`--features cuda` OR `--features vulkan`)."
+    );
+
     // GPU Acceleration Detection and Build Guidance
     detect_and_report_gpu_capabilities();
 

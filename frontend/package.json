@@ -1,6 +1,6 @@
 {
     "name": "meetily",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "private": true,
     "main": "electron/main.js",
     "scripts": {
@@ -87,6 +87,7 @@
         "zod": "^3.25.71"
     },
     "devDependencies": {
+        "@tailwindcss/container-queries": "^0.1.1",
         "@tailwindcss/typography": "^0.5.15",
         "@tauri-apps/cli": "2.6.2",
         "@tauri-apps/plugin-fs": "2.4.0",

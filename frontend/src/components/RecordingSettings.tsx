@@ -15,17 +15,6 @@ export interface RecordingPreferences {
   diarization_enabled: boolean;
 }
 
-interface DiarizationModelsStatus {
-  segmentation_present: boolean;
-  embedding_present: boolean;
-  models_dir: string;
-}
-
-interface RuntimeAcceleration {
-  whisper: string;
-  diarization: string;
-}
-
 interface RecordingSettingsProps {
   onSave?: (preferences: RecordingPreferences) => void;
 }
@@ -42,8 +31,6 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showRecordingNotification, setShowRecordingNotification] = useState(true);
-  const [diarizationStatus, setDiarizationStatus] = useState<DiarizationModelsStatus | null>(null);
-  const [acceleration, setAcceleration] = useState<RuntimeAcceleration | null>(null);
 
   // Load recording preferences on component mount
   useEffect(() => {
@@ -82,29 +69,6 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     };
     loadNotificationPref();
   }, []);
-
-  // Load diarization model status + runtime acceleration
-  useEffect(() => {
-    (async () => {
-      try {
-        const [status, accel] = await Promise.all([
-          invoke<DiarizationModelsStatus>('diarization_models_status'),
-          invoke<RuntimeAcceleration>('get_runtime_acceleration'),
-        ]);
-        setDiarizationStatus(status);
-        setAcceleration(accel);
-      } catch (error) {
-        console.error('Failed to load diarization status:', error);
-      }
-    })();
-  }, []);
-
-  const handleDiarizationToggle = async (enabled: boolean) => {
-    const newPreferences = { ...preferences, diarization_enabled: enabled };
-    setPreferences(newPreferences);
-    await savePreferences(newPreferences);
-    await Analytics.track('diarization_toggled', { enabled: enabled.toString() });
-  };
 
   const handleAutoSaveToggle = async (enabled: boolean) => {
     const newPreferences = { ...preferences, auto_save: enabled };
@@ -262,33 +226,6 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
         <Switch
           checked={showRecordingNotification}
           onCheckedChange={handleNotificationToggle}
-        />
-      </div>
-
-      {/* Speaker Diarization Toggle */}
-      <div className="flex items-center justify-between p-4 border rounded-lg">
-        <div className="flex-1">
-          <div className="font-medium">Identify speakers</div>
-          <div className="text-sm text-gray-600">
-            After a recording stops, label transcript segments by speaker
-            (Speaker 1, Speaker 2…). First use downloads ~80&nbsp;MB.
-          </div>
-          {acceleration && (
-            <div className="text-xs text-gray-500 mt-1">
-              Acceleration: diarization runs on{' '}
-              <strong>{acceleration.diarization.toUpperCase()}</strong>
-              {diarizationStatus &&
-                (diarizationStatus.segmentation_present &&
-                diarizationStatus.embedding_present
-                  ? ' · models ready'
-                  : ' · models will download on first run')}
-            </div>
-          )}
-        </div>
-        <Switch
-          checked={preferences.diarization_enabled}
-          onCheckedChange={handleDiarizationToggle}
-          disabled={saving}
         />
       </div>
 

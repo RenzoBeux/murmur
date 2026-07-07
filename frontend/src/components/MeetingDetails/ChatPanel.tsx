@@ -1,6 +1,8 @@
 "use client";
 
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { ChevronDown, Loader2, MessageSquare, Send, Sparkles, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -290,16 +292,86 @@ function ModelPicker({
 
 function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
-  return (
-    <div className={cn('flex w-full', isUser ? 'justify-end' : 'justify-start')}>
-      <div
-        className={cn(
-          'max-w-[85%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm shadow-sm',
-          isUser ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-800'
-        )}
-      >
-        {message.content}
+
+  // User messages are short, plain text — keep them as compact right-aligned
+  // bubbles. Assistant replies are markdown and can be long/structured, so they
+  // span the full column width and render as rich markdown.
+  if (isUser) {
+    return (
+      <div className="flex w-full justify-end">
+        <div className="max-w-[85%] whitespace-pre-wrap rounded-lg bg-blue-500 px-3 py-2 text-sm text-white shadow-sm">
+          {message.content}
+        </div>
       </div>
+    );
+  }
+
+  return (
+    <div className="flex w-full justify-start">
+      <div className="w-full rounded-lg bg-gray-100 px-3 py-2 text-sm text-gray-800 shadow-sm">
+        <MarkdownContent content={message.content} />
+      </div>
+    </div>
+  );
+}
+
+// Renders assistant markdown with explicit utility classes rather than relying
+// on the `prose` (typography) plugin, since the active Tailwind config between
+// tailwind.config.js / .ts is ambiguous. These core utilities exist in both.
+const MARKDOWN_COMPONENTS: Parameters<typeof ReactMarkdown>[0]['components'] = {
+  p: ({ children }) => <p className="mb-2 last:mb-0 leading-relaxed">{children}</p>,
+  ul: ({ children }) => <ul className="mb-2 last:mb-0 list-disc space-y-1 pl-5">{children}</ul>,
+  ol: ({ children }) => <ol className="mb-2 last:mb-0 list-decimal space-y-1 pl-5">{children}</ol>,
+  li: ({ children }) => <li className="marker:text-gray-400">{children}</li>,
+  h1: ({ children }) => <h1 className="mb-2 mt-1 text-base font-semibold">{children}</h1>,
+  h2: ({ children }) => <h2 className="mb-2 mt-1 text-sm font-semibold">{children}</h2>,
+  h3: ({ children }) => <h3 className="mb-1 mt-1 text-sm font-semibold">{children}</h3>,
+  strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+  em: ({ children }) => <em className="italic">{children}</em>,
+  a: ({ href, children }) => (
+    <a href={href} target="_blank" rel="noreferrer" className="text-blue-600 underline">
+      {children}
+    </a>
+  ),
+  blockquote: ({ children }) => (
+    <blockquote className="mb-2 border-l-2 border-gray-300 pl-3 italic text-gray-600">
+      {children}
+    </blockquote>
+  ),
+  hr: () => <hr className="my-3 border-gray-200" />,
+  pre: ({ children }) => (
+    <pre className="mb-2 last:mb-0 overflow-x-auto rounded-md bg-gray-800 p-3 text-xs text-gray-100">
+      {children}
+    </pre>
+  ),
+  code: ({ className, children }) => {
+    // Fenced (block) code carries a `language-*` class and is wrapped by <pre>;
+    // leave its styling to <pre>. Everything else is inline code.
+    const isBlock = /language-/.test(className || '');
+    if (isBlock) {
+      return <code className={className}>{children}</code>;
+    }
+    return (
+      <code className="rounded bg-gray-200 px-1 py-0.5 font-mono text-[0.85em]">{children}</code>
+    );
+  },
+  table: ({ children }) => (
+    <div className="mb-2 overflow-x-auto">
+      <table className="w-full border-collapse text-xs">{children}</table>
+    </div>
+  ),
+  th: ({ children }) => (
+    <th className="border border-gray-200 px-2 py-1 text-left font-semibold">{children}</th>
+  ),
+  td: ({ children }) => <td className="border border-gray-200 px-2 py-1">{children}</td>,
+};
+
+function MarkdownContent({ content }: { content: string }) {
+  return (
+    <div className="break-words">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+        {content}
+      </ReactMarkdown>
     </div>
   );
 }

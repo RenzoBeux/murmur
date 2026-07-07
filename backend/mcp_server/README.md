@@ -8,7 +8,7 @@ transcripts and summaries.
 It reads Meetily's local SQLite database (`meeting_minutes.db`) **directly and
 read-only**, so:
 
-- It works even when the Meetily FastAPI backend is **not** running.
+- It works even when the Meetily app is **not** running.
 - It can never modify or corrupt your meeting data (the DB is opened with
   SQLite `mode=ro`).
 - No extra ports or servers — the AI client launches it on demand over stdio.
@@ -88,4 +88,5 @@ By default the server reads `backend/meeting_minutes.db`. To use a different DB
 }
 ```
 
-This is the same `DATABASE_PATH` variable the Meetily backend itself uses.
+Point it at the database the Meetily app actually writes (the production
+location above is the usual choice for an installed build).

@@ -1,152 +1,50 @@
-# Contributing to Meeting Minutes Updates
+# Contributing to Meetily
 
-Thank you for your interest in contributing to Meetily! This document provides guidelines and instructions for contributing to this project.
+Thanks for your interest in contributing! This repository is a personal fork of [Zackriya-Solutions/meeting-minutes](https://github.com/Zackriya-Solutions/meeting-minutes) with a restructured, backend-free architecture — issues and pull requests are welcome.
 
 ## Development Workflow
 
 ### Branch Strategy
 
-- `main` - Production branch
-- `devtest` - Development and testing branch
-- Feature branches should be created from `devtest`
+- `main` is the single long-lived branch.
+- Create short-lived branches from `main` using the `feat/*` or `fix/*` prefix, and open pull requests back into `main`.
 
 ### Getting Started
 
-1. Fork the repository
-2. Clone your fork:
+1. Fork the repository and clone your fork:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/meeting-minutes.git
+   git clone https://github.com/YOUR_USERNAME/meetily.git
    ```
-3. Add the original repository as upstream:
+2. Create a branch:
    ```bash
-   git remote add upstream https://github.com/Zackriya-Solutions/meeting-minutes.git
+   git checkout -b feat/your-feature-name
    ```
-4. Create a new branch from `devtest`:
-   ```bash
-   git checkout devtest
-   git pull upstream devtest
-   git checkout -b feature/your-feature-name
-   ```
+3. Set up the toolchain and build — see the [Building guide](docs/BUILDING.md).
 
-### Development Process
+### Before Opening a PR
 
-1. Always start your work from the `devtest` branch
-2. Create a new branch for each feature/fix
-3. Make your changes
-4. Write or update tests as needed
-5. Ensure all tests pass
-6. Update documentation if necessary
+- `cargo check --workspace` passes (run from the repo root).
+- `pnpm exec tsc --noEmit` passes (run from `frontend/`).
+- The app builds and the affected flow works — for audio/transcription changes, do a real recording smoke test.
+- Follow the existing conventions (see [CLAUDE.md](CLAUDE.md)): `anyhow::Result` in Rust, no index/barrel files in TypeScript, audio devices are named "microphone"/"system".
 
-### Issue Creation
-
-Before starting work on a new feature or bug fix:
-
-1. Check if an issue already exists
-2. If not, create a new issue with:
-   - Clear title
-   - Detailed description
-   - Steps to reproduce (for bugs)
-   - Expected behavior
-   - Screenshots (if applicable)
-   - Labels (bug, enhancement, etc.)
-
-### Pull Request Process
-
-1. Create a PR from your feature branch to `devtest`
-2. Link the PR to the related issue using the issue number (e.g., "Fixes #123")
-3. Fill out the PR template completely
-4. Ensure CI checks pass
-5. Request review from at least one maintainer
-6. Address any review comments
-7. Once approved, the PR will be merged into `devtest`
-
-### PR Template
-
-```markdown
-## Description
-[Describe your changes here]
-
-## Related Issue
-[Link to the issue this PR addresses]
-
-## Type of Change
-- [ ] Bug fix
-- [ ] New feature
-- [ ] Documentation update
-- [ ] Performance improvement
-- [ ] Code refactoring
-- [ ] Other (please describe)
-
-## Testing
-- [ ] Unit tests added/updated
-- [ ] Manual testing performed
-- [ ] All tests pass
-
-## Documentation
-- [ ] Documentation updated
-- [ ] No documentation needed
-
-## Checklist
-- [ ] Code follows project style
-- [ ] Self-reviewed the code
-- [ ] Added comments for complex code
-- [ ] Updated README if needed
-```
-
-## Code Style
-
-- Follow the existing code style
-- Use meaningful variable and function names
-- Add comments for complex logic
-- Keep functions small and focused
-- Write clear commit messages
-
-## Commit Message Format
+### Commit Message Format
 
 ```
 <type>(<scope>): <subject>
-
-<body>
-
-<footer>
 ```
 
-Types:
-- feat: New feature
-- fix: Bug fix
-- docs: Documentation changes
-- style: Code style changes
-- refactor: Code refactoring
-- test: Adding/updating tests
-- chore: Maintenance tasks
+Types match the git history: `feat`, `fix`, `docs`, `refactor`, `chore`, `test` — scope is optional, e.g. `feat(diarization): ...`.
 
-## Testing
+## Reporting Issues
 
-- Write unit tests for new features
-- Update existing tests when modifying code
-- Ensure all tests pass before submitting PR
-- Include integration tests for complex features
+Open a GitHub issue with:
 
-## Documentation
-
-- Update documentation for new features
-- Keep README up to date
-- Document API changes
-- Add comments for complex code
-
-## Review Process
-
-1. PRs require at least one review
-2. Address all review comments
-3. Keep the PR up to date with `devtest`
-4. Squash commits if requested
-
-## Getting Help
-
-- Create an issue for questions
-- Join our community chat
-- Contact maintainers
+- Your OS and GPU (and which build features you used, e.g. CUDA/Vulkan)
+- Steps to reproduce and expected behavior
+- Relevant logs (run the app via `clean_run_windows.bat` / `./clean_run.sh` to get terminal logs)
+- Screenshots if applicable
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the project's MIT License. 
+By contributing, you agree that your contributions will be licensed under the project's MIT License.

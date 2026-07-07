@@ -1,57 +1,45 @@
 # GPU Acceleration Guide
 
-Meetily supports GPU acceleration for transcription, which can significantly improve performance. This guide provides detailed information on how to set up and configure GPU acceleration for your system.
+Meetily accelerates transcription (whisper.cpp via `whisper-rs`) and local summarization (llama.cpp sidecar) on the GPU. Expect roughly 5–10x faster transcription than CPU.
 
 ## Supported Backends
 
-Meetily uses the `whisper-rs` library, which supports several GPU acceleration backends:
+| Backend      | Hardware                        | Speed boost   |
+| ------------ | ------------------------------- | ------------- |
+| **CUDA**     | NVIDIA GPUs                     | 5–10x         |
+| **Metal**    | Apple Silicon (+ CoreML layer)  | 5–10x         |
+| **Vulkan**   | AMD / Intel / NVIDIA GPUs       | 3–6x          |
+| **ROCm**     | AMD GPUs (`hipblas` feature)    | 4–8x          |
+| **OpenBLAS** | CPU-optimized math              | 1.5–2x        |
+| **CPU**      | Anything                        | 1x (baseline) |
 
-*   **CUDA:** For NVIDIA GPUs.
-*   **Metal:** For Apple Silicon and modern Intel-based Macs.
-*   **Core ML:** An additional acceleration layer for Apple Silicon.
-*   **Vulkan:** A cross-platform solution for modern AMD and Intel GPUs.
-*   **OpenBLAS:** A CPU-based optimization that can provide a significant speed-up over standard CPU processing.
+## Automatic Detection
 
-## Automatic GPU Detection
-
-The build scripts (`dev-gpu.sh`, `build-gpu.sh`) are designed to automatically detect your GPU and enable the appropriate feature flag during the build process. The detection is handled by the `scripts/auto-detect-gpu.js` script.
-
-Here's the detection priority:
-
-1.  **CUDA (NVIDIA)**
-2.  **Metal (Apple)**
-3.  **Vulkan (AMD/Intel)**
-4.  **OpenBLAS (CPU)**
-
-If no GPU is detected, the application will fall back to CPU-only processing.
+You normally don't configure anything: `pnpm tauri:dev` and `pnpm tauri:build` run `scripts/auto-detect-gpu.js` and pick the best available backend (CUDA → ROCm → Vulkan → OpenBLAS → CPU). Detection requires the **development SDK** for your GPU (CUDA toolkit, ROCm, or Vulkan SDK), not just drivers.
 
 ## Manual Configuration
 
-If you want to manually configure the GPU acceleration backend, you can do so by enabling the corresponding feature flag in the `frontend/src-tauri/Cargo.toml` file.
+Force a backend with the explicit scripts or the `TAURI_GPU_FEATURE` environment variable:
 
-For example, to enable CUDA, you would modify the `[features]` section as follows:
-
-```toml
-[features]
-default = ["cuda"]
-
-# ... other features
-
-cuda = ["whisper-rs/cuda"]
+```bash
+pnpm tauri:build:cuda                      # explicit script
+TAURI_GPU_FEATURE=vulkan pnpm tauri:build  # env override
+TAURI_GPU_FEATURE="" pnpm tauri:build      # force plain CPU
 ```
 
-Then, you would build the application using the standard `pnpm tauri:build` command.
+> ⚠️ Never build with **CUDA and Vulkan enabled together** — a ggml compiled with both backends aborts at transcription time.
 
-## Platform-Specific Instructions
+## Platform Notes
 
-### Linux
+- **macOS:** Metal + CoreML are enabled automatically; nothing to install.
+- **Windows:** Install the [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) (NVIDIA) or [Vulkan SDK](https://vulkan.lunarg.com/) (AMD/Intel), plus Visual Studio Build Tools with the C++ workload.
+- **Linux:** See the per-backend SDK setup (CUDA/Vulkan/ROCm) in the [Building guide](BUILDING.md#-linux).
 
-For detailed instructions on setting up GPU acceleration on Linux, please refer to the [Linux build instructions](BUILDING.md#--building-on-linux).
+### CUDA compile times
 
-### macOS
+CUDA builds target Turing/Ampere/Ada (`75;86;89`) by default. Pin your card's architecture for much faster compiles:
 
-On macOS, Metal GPU acceleration is enabled by default. No additional configuration is required.
-
-### Windows
-
-To enable GPU acceleration on Windows, you will need to install the appropriate toolkit for your GPU (e.g., the CUDA Toolkit for NVIDIA GPUs) and then build the application with the corresponding feature flag enabled.
+```bash
+nvidia-smi --query-gpu=compute_cap --format=csv   # e.g. 8.6 → "86"
+CMAKE_CUDA_ARCHITECTURES=86-real pnpm tauri:build
+```

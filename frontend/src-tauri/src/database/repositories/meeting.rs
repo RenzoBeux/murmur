@@ -197,6 +197,50 @@ impl MeetingsRepository {
         Ok(true)
     }
 
+    pub async fn get_meeting_attendees(
+        pool: &SqlitePool,
+        meeting_id: &str,
+    ) -> Result<Option<String>, SqlxError> {
+        if meeting_id.trim().is_empty() {
+            return Err(SqlxError::Protocol(
+                "meeting_id cannot be empty".to_string(),
+            ));
+        }
+
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT attendees FROM meetings WHERE id = ?")
+                .bind(meeting_id)
+                .fetch_optional(pool)
+                .await?;
+
+        Ok(row.and_then(|(attendees,)| attendees).filter(|a| !a.trim().is_empty()))
+    }
+
+    pub async fn update_meeting_attendees(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        attendees: Option<&str>,
+    ) -> Result<bool, SqlxError> {
+        if meeting_id.trim().is_empty() {
+            return Err(SqlxError::Protocol(
+                "meeting_id cannot be empty".to_string(),
+            ));
+        }
+
+        // Store NULL instead of empty/whitespace-only strings
+        let normalised = attendees.map(str::trim).filter(|a| !a.is_empty());
+
+        let result =
+            sqlx::query("UPDATE meetings SET attendees = ?, updated_at = ? WHERE id = ?")
+                .bind(normalised)
+                .bind(Utc::now().naive_utc())
+                .bind(meeting_id)
+                .execute(pool)
+                .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn update_meeting_name(
         pool: &SqlitePool,
         meeting_id: &str,

@@ -80,9 +80,22 @@ pub async fn api_send_chat_message<R: Runtime>(
         .await
         .map_err(|e| format!("Failed to save user message: {}", e))?;
 
+    // Attendee roster (canonical name spellings), same source the summary uses.
+    let attendees = match MeetingsRepository::get_meeting_attendees(pool, &meeting_id).await {
+        Ok(attendees) => attendees,
+        Err(e) => {
+            log_error!(
+                "Failed to load attendees for chat (meeting={}): {}. Continuing without roster.",
+                meeting_id,
+                e
+            );
+            None
+        }
+    };
+
     // Build prompts.
     let transcript_text = build_transcript_text(&meeting);
-    let system_prompt = build_system_prompt(&meeting.title, &transcript_text);
+    let system_prompt = build_system_prompt(&meeting.title, &transcript_text, attendees.as_deref());
     let user_prompt = build_user_prompt(&history, trimmed_message);
 
     // Resolve provider + auxiliary config.
@@ -264,19 +277,36 @@ fn build_transcript_text(meeting: &crate::api::api::MeetingDetails) -> String {
     joined
 }
 
-fn build_system_prompt(meeting_title: &str, transcript_text: &str) -> String {
+fn build_system_prompt(
+    meeting_title: &str,
+    transcript_text: &str,
+    attendees: Option<&str>,
+) -> String {
     let mut prompt = String::new();
     prompt.push_str(
         "You are a helpful assistant answering questions about a recorded meeting.\n\
          Ground every answer strictly in the meeting transcript below. \
          Quote only verbatim text that actually appears in the transcript. \
          If the answer is not in the transcript, say you cannot find it rather than guessing. \
-         Each transcript line that has a known speaker is prefixed `Speaker: text` — use \
-         those labels when attributing statements. \"You\" is the local microphone, \
-         \"Others\" is everyone else on the call, and other labels (e.g. speaker_1) come \
-         from speaker diarization. \
+         Each transcript line that has a known speaker is prefixed `Speaker: text` — the \
+         label before the colon is the ONLY reliable indicator of who is speaking. \
+         \"You\" is the local microphone, \"Others\" is everyone else on the call, and \
+         other labels (e.g. speaker_1) come from speaker diarization. \
+         A name mentioned inside the spoken text is someone being talked to or about — \
+         NOT necessarily the speaker; never attribute a statement to a person merely \
+         because their name was mentioned. If you cannot tell who said something from \
+         the speaker labels, say so instead of guessing. \
          Keep answers concise and reference specific speakers or moments when relevant.\n\n",
     );
+    if let Some(roster) = attendees.map(str::trim).filter(|a| !a.is_empty()) {
+        prompt.push_str(&format!(
+            "Attendees (canonical names, provided by the user):\n{roster}\n\
+             The transcript comes from automatic speech recognition and may misspell \
+             names. When a name in the transcript closely resembles an attendee name, \
+             use the attendee's canonical spelling in your answers. Do not invent people \
+             who are neither in this list nor in the transcript.\n\n"
+        ));
+    }
     prompt.push_str(&format!("Meeting title: {}\n\n", meeting_title));
     prompt.push_str("--- TRANSCRIPT ---\n");
     if transcript_text.is_empty() {
@@ -287,6 +317,35 @@ fn build_system_prompt(meeting_title: &str, transcript_text: &str) -> String {
     }
     prompt.push_str("--- END TRANSCRIPT ---\n");
     prompt
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_prompt_includes_attendee_roster_when_provided() {
+        let prompt = build_system_prompt("Standup", "You: hello", Some("Renzo, Lean, Sofía"));
+
+        assert!(prompt.contains("Renzo, Lean, Sofía"));
+        assert!(prompt.contains("canonical spelling"));
+    }
+
+    #[test]
+    fn system_prompt_omits_roster_block_when_absent_or_blank() {
+        for attendees in [None, Some(""), Some("   \n")] {
+            let prompt = build_system_prompt("Standup", "You: hello", attendees);
+            assert!(!prompt.contains("Attendees (canonical names"));
+        }
+    }
+
+    #[test]
+    fn system_prompt_always_carries_attribution_rules() {
+        let prompt = build_system_prompt("Standup", "You: hello", None);
+
+        assert!(prompt.contains("ONLY reliable indicator"));
+        assert!(prompt.contains("NOT necessarily the speaker"));
+    }
 }
 
 fn build_user_prompt(history: &[ChatMessage], current_message: &str) -> String {

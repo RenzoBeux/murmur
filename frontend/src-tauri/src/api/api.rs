@@ -992,6 +992,46 @@ pub async fn api_save_meeting_title<R: Runtime>(
 }
 
 #[tauri::command]
+pub async fn api_get_meeting_attendees<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+) -> Result<Option<String>, String> {
+    log_info!("api_get_meeting_attendees called for meeting_id: {}", meeting_id);
+    let pool = state.db_manager.pool();
+    MeetingsRepository::get_meeting_attendees(pool, &meeting_id)
+        .await
+        .map_err(|e| {
+            log_error!("Failed to get attendees for {}: {}", meeting_id, e);
+            format!("Failed to get meeting attendees: {}", e)
+        })
+}
+
+#[tauri::command]
+pub async fn api_save_meeting_attendees<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    attendees: Option<String>,
+) -> Result<serde_json::Value, String> {
+    log_info!("api_save_meeting_attendees called for meeting_id: {}", meeting_id);
+    let pool = state.db_manager.pool();
+    match MeetingsRepository::update_meeting_attendees(pool, &meeting_id, attendees.as_deref())
+        .await
+    {
+        Ok(true) => Ok(serde_json::json!({"message": "Meeting attendees saved successfully"})),
+        Ok(false) => {
+            log_error!("No meeting found with id {}", meeting_id);
+            Err(format!("No meeting found with id {}", meeting_id))
+        }
+        Err(e) => {
+            log_error!("Failed to update attendees for {}: {}", meeting_id, e);
+            Err(format!("Failed to update meeting attendees: {}", e))
+        }
+    }
+}
+
+#[tauri::command]
 pub async fn api_save_transcript<R: Runtime>(
     _app: AppHandle<R>,
     state: tauri::State<'_, AppState>,

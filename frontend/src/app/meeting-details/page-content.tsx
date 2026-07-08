@@ -60,6 +60,7 @@ export default function PageContent({
 
   // State
   const [customPrompt, setCustomPrompt] = useState<string>('');
+  const [attendees, setAttendees] = useState<string>('');
   const [isRecording] = useState(false);
   const [summaryResponse] = useState<SummaryResponse | null>(null);
 
@@ -75,6 +76,32 @@ export default function PageContent({
   // Custom hooks
   const meetingData = useMeetingData({ meeting, summaryData, onMeetingUpdated });
   const templates = useTemplates();
+
+  // Load the persisted attendee roster for this meeting. The backend injects it
+  // into summary prompts so the LLM uses canonical name spellings.
+  useEffect(() => {
+    let cancelled = false;
+    invoke<string | null>('api_get_meeting_attendees', { meetingId: meeting.id })
+      .then((value) => {
+        if (!cancelled) setAttendees(value ?? '');
+      })
+      .catch((error) => console.error('Failed to load meeting attendees:', error));
+    return () => {
+      cancelled = true;
+    };
+  }, [meeting.id]);
+
+  const handleAttendeesSave = async (value: string) => {
+    try {
+      await invoke('api_save_meeting_attendees', {
+        meetingId: meeting.id,
+        attendees: value.trim() || null,
+      });
+    } catch (error) {
+      console.error('Failed to save meeting attendees:', error);
+      toast.error('Failed to save attendees');
+    }
+  };
 
   // Callback to register the modal open function
   const handleRegisterModalOpen = (openFn: () => void) => {
@@ -183,6 +210,9 @@ export default function PageContent({
           transcripts={meetingData.transcripts}
           customPrompt={customPrompt}
           onPromptChange={setCustomPrompt}
+          attendees={attendees}
+          onAttendeesChange={setAttendees}
+          onAttendeesSave={handleAttendeesSave}
           onCopyTranscript={copyOperations.handleCopyTranscript}
           onOpenMeetingFolder={meetingOperations.handleOpenMeetingFolder}
           onExportMarkdown={exportOperations.handleExportMarkdown}

@@ -59,6 +59,7 @@ const ENGLISH_CACHE_FIELD: &str = "english_cache";
 struct SummaryCacheSource {
     transcript_fingerprint: String,
     custom_prompt_fingerprint: String,
+    attendees_fingerprint: String,
     template_id: String,
     template_fingerprint: String,
     token_threshold: usize,
@@ -94,6 +95,7 @@ fn stable_text_fingerprint(text: &str) -> String {
 fn build_summary_cache_source(
     text: &str,
     custom_prompt: &str,
+    attendees: Option<&str>,
     template_id: &str,
     template_fingerprint: &str,
     token_threshold: usize,
@@ -108,6 +110,7 @@ fn build_summary_cache_source(
     SummaryCacheSource {
         transcript_fingerprint: stable_text_fingerprint(text),
         custom_prompt_fingerprint: stable_text_fingerprint(custom_prompt),
+        attendees_fingerprint: stable_text_fingerprint(attendees.unwrap_or("")),
         template_id: template_id.to_string(),
         template_fingerprint: template_fingerprint.to_string(),
         token_threshold,
@@ -485,9 +488,26 @@ impl SummaryService {
         };
         let template_fingerprint = template_cache_fingerprint(&template);
 
+        // Attendee roster is stored per-meeting and injected into the prompts as
+        // the canonical spelling of participant names.
+        let attendees = match MeetingsRepository::get_meeting_attendees(&pool, &meeting_id).await {
+            Ok(attendees) => attendees,
+            Err(e) => {
+                warn!(
+                    "Failed to load attendees for meeting_id={}: {}. Generating summary without roster.",
+                    meeting_id, e
+                );
+                None
+            }
+        };
+        if attendees.is_some() {
+            info!("📝 Using attendee roster for summary prompts");
+        }
+
         let cache_source = build_summary_cache_source(
             &text,
             &custom_prompt,
+            attendees.as_deref(),
             &template_id,
             &template_fingerprint,
             token_threshold,
@@ -549,6 +569,7 @@ impl SummaryService {
             summary_language.as_deref(),
             detected_summary_language.as_deref(),
             cached_english.as_deref(),
+            attendees.as_deref(),
         )
         .await;
 
@@ -731,6 +752,7 @@ mod tests {
         build_summary_cache_source(
             "transcript body",
             "custom prompt",
+            Some("Renzo, Lean"),
             "standard_meeting",
             &template_fingerprint,
             3700,
@@ -830,6 +852,7 @@ mod tests {
             build_summary_cache_source(
                 "changed transcript",
                 "custom prompt",
+                Some("Renzo, Lean"),
                 "standard_meeting",
                 &template_fingerprint,
                 3700,
@@ -844,6 +867,7 @@ mod tests {
             build_summary_cache_source(
                 "transcript body",
                 "changed prompt",
+                Some("Renzo, Lean"),
                 "standard_meeting",
                 &template_fingerprint,
                 3700,
@@ -858,6 +882,7 @@ mod tests {
             build_summary_cache_source(
                 "transcript body",
                 "custom prompt",
+                Some("Renzo, Lean"),
                 "daily_standup",
                 &template_fingerprint,
                 3700,
@@ -872,6 +897,7 @@ mod tests {
             build_summary_cache_source(
                 "transcript body",
                 "custom prompt",
+                Some("Renzo, Lean"),
                 "standard_meeting",
                 &template_fingerprint,
                 3700,
@@ -886,6 +912,7 @@ mod tests {
             build_summary_cache_source(
                 "transcript body",
                 "custom prompt",
+                Some("Renzo, Lean"),
                 "standard_meeting",
                 &template_fingerprint,
                 3700,
@@ -900,6 +927,7 @@ mod tests {
             build_summary_cache_source(
                 "transcript body",
                 "custom prompt",
+                Some("Renzo, Lean"),
                 "standard_meeting",
                 &template_fingerprint,
                 3700,
@@ -914,6 +942,7 @@ mod tests {
             build_summary_cache_source(
                 "transcript body",
                 "custom prompt",
+                Some("Renzo, Lean"),
                 "standard_meeting",
                 &template_fingerprint,
                 3700,
@@ -928,6 +957,30 @@ mod tests {
         ];
 
         for changed_source in changed_sources {
+            assert_eq!(
+                extract_cached_english_markdown(&raw, &changed_source, Some("de")).unwrap(),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn test_changed_attendees_rejects_cache() {
+        let source = sample_cache_source();
+        let raw = build_summary_result_json(
+            "# Reunion\n## Points\nBonjour",
+            "# Meeting\n## Points\nHello",
+            source.clone(),
+            Some("fr"),
+        )
+        .to_string();
+
+        for changed_attendees in [Some("Renzo, Lean, Sofía"), None] {
+            let changed_source = SummaryCacheSource {
+                attendees_fingerprint: stable_text_fingerprint(changed_attendees.unwrap_or("")),
+                ..source.clone()
+            };
+
             assert_eq!(
                 extract_cached_english_markdown(&raw, &changed_source, Some("de")).unwrap(),
                 None

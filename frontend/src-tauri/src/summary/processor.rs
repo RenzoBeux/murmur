@@ -15,6 +15,38 @@ static THINKING_TAG_REGEX: Lazy<Regex> = Lazy::new(|| {
 const ENGLISH_BASE_SUMMARY_INSTRUCTION: &str =
     "**Write the summary/report in English regardless of transcript language; non-English prose is invalid.**";
 
+const SPEAKER_ATTRIBUTION_RULES: &str = r#"**SPEAKER ATTRIBUTION RULES:**
+- Transcript lines are formatted `[MM:SS] Speaker: text`. The speaker label before the colon is the ONLY reliable indicator of who is speaking.
+- A name mentioned inside the spoken text is someone being talked to or about — NOT necessarily the speaker. Never attribute a statement to a person merely because their name was mentioned.
+- If you cannot determine who said or owns something from the speaker labels, keep the generic label (e.g. "Speaker 1") or omit the attribution entirely. Never guess."#;
+
+/// Renders the attendee roster block injected into summary prompts, or an
+/// empty string when no roster was provided for the meeting.
+fn attendees_prompt_block(attendees: Option<&str>) -> String {
+    match attendees.map(str::trim).filter(|a| !a.is_empty()) {
+        Some(roster) => format!(
+            r#"**ATTENDEES (canonical names, provided by the user):**
+<attendees>
+{roster}
+</attendees>
+- The transcript comes from automatic speech recognition and may misspell names. When a name in the transcript closely resembles an attendee name (e.g. "Leeen" vs "Lean"), always use the attendee's canonical spelling.
+- Do not invent people who are neither in this list nor in the transcript.
+- For any section listing attendees/participants, use this list."#
+        ),
+        None => String::new(),
+    }
+}
+
+/// Joins prompt fragments with blank lines, skipping empty ones.
+fn join_prompt_parts(parts: &[&str]) -> String {
+    parts
+        .iter()
+        .filter(|p| !p.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 fn resolve_cached_english<'a>(
     cached: Option<&'a str>,
     summary_language: Option<&str>,
@@ -134,24 +166,36 @@ fn translation_system_prompt(target_language: &str) -> String {
     )
 }
 
-fn build_chunk_summary_user_prompt(chunk: &str) -> String {
-    format!(
-        "{ENGLISH_BASE_SUMMARY_INSTRUCTION}\n\nProvide a concise but comprehensive summary of the following transcript chunk. Capture all key points, decisions, action items, and mentioned individuals.\n\n<transcript_chunk>\n{chunk}\n</transcript_chunk>"
-    )
+fn build_chunk_summary_user_prompt(chunk: &str, attendees: Option<&str>) -> String {
+    join_prompt_parts(&[
+        ENGLISH_BASE_SUMMARY_INSTRUCTION,
+        SPEAKER_ATTRIBUTION_RULES,
+        &attendees_prompt_block(attendees),
+        &format!(
+            "Provide a concise but comprehensive summary of the following transcript chunk. Capture all key points, decisions, action items, and who said what (following the speaker attribution rules).\n\n<transcript_chunk>\n{chunk}\n</transcript_chunk>"
+        ),
+    ])
 }
 
-fn build_combine_summary_user_prompt(combined_text: &str) -> String {
-    format!(
-        "{ENGLISH_BASE_SUMMARY_INSTRUCTION}\n\nThe following are consecutive summaries of a meeting. Combine them into a single, coherent, and detailed narrative summary that retains all important details, organized logically.\n\n<summaries>\n{combined_text}\n</summaries>"
-    )
+fn build_combine_summary_user_prompt(combined_text: &str, attendees: Option<&str>) -> String {
+    join_prompt_parts(&[
+        ENGLISH_BASE_SUMMARY_INSTRUCTION,
+        &attendees_prompt_block(attendees),
+        &format!(
+            "The following are consecutive summaries of a meeting. Combine them into a single, coherent, and detailed narrative summary that retains all important details, organized logically.\n\n<summaries>\n{combined_text}\n</summaries>"
+        ),
+    ])
 }
 
 fn build_final_report_system_prompt(
     section_instructions: &str,
     clean_template_markdown: &str,
+    attendees: Option<&str>,
 ) -> String {
-    format!(
-        r#"You are an expert meeting summarizer. Generate a final meeting report by filling in the provided Markdown template based on the source text.
+    let attendees_block = attendees_prompt_block(attendees);
+    join_prompt_parts(&[
+        &format!(
+            r#"You are an expert meeting summarizer. Generate a final meeting report by filling in the provided Markdown template based on the source text.
 
 **CRITICAL INSTRUCTIONS:**
 1. {ENGLISH_BASE_SUMMARY_INSTRUCTION}
@@ -160,15 +204,19 @@ fn build_final_report_system_prompt(
 4. Fill each template section per its instructions.
 5. If a section has no relevant info, write "None noted in this section."
 6. Output **only** the completed Markdown report.
-7. If unsure about something, omit it.
-
-**SECTION-SPECIFIC INSTRUCTIONS:**
+7. If unsure about something, omit it."#
+        ),
+        SPEAKER_ATTRIBUTION_RULES,
+        &attendees_block,
+        &format!(
+            r#"**SECTION-SPECIFIC INSTRUCTIONS:**
 {section_instructions}
 
 <template>
 {clean_template_markdown}
 </template>"#
-    )
+        ),
+    ])
 }
 
 /// Rough token count estimation using character count
@@ -316,6 +364,7 @@ pub fn extract_meeting_name_from_markdown(markdown: &str) -> Option<String> {
 /// * `summary_language` - Optional BCP-47 tag (e.g. "en-GB") to force summary output language
 /// * `detected_transcript_language` - Optional detected transcript language BCP-47 tag
 /// * `cached_english` - Optional previously-generated English summary to skip pass 1 when translating
+/// * `attendees` - Optional user-provided attendee roster (canonical name spellings)
 ///
 /// # Returns
 /// Tuple of (final_summary_markdown, english_summary_markdown, number_of_chunks_processed)
@@ -342,6 +391,7 @@ pub async fn generate_meeting_summary(
     summary_language: Option<&str>,
     detected_transcript_language: Option<&str>,
     cached_english: Option<&str>,
+    attendees: Option<&str>,
 ) -> Result<(String, String, i64), String> {
     if let Some(token) = cancellation_token {
         if token.is_cancelled() {
@@ -401,7 +451,7 @@ pub async fn generate_meeting_summary(
                 }
 
                 info!("Processing chunk {}/{}", i + 1, num_chunks);
-                let user_prompt_chunk = build_chunk_summary_user_prompt(chunk);
+                let user_prompt_chunk = build_chunk_summary_user_prompt(chunk, attendees);
 
                 match generate_summary(
                     client,
@@ -456,7 +506,8 @@ pub async fn generate_meeting_summary(
                 );
                 let combined_text = chunk_summaries.join("\n---\n");
                 let system_prompt_combine = "You are an expert at synthesizing meeting summaries.";
-                let user_prompt_combine = build_combine_summary_user_prompt(&combined_text);
+                let user_prompt_combine =
+                    build_combine_summary_user_prompt(&combined_text, attendees);
                 generate_summary(
                     client,
                     provider,
@@ -485,8 +536,11 @@ pub async fn generate_meeting_summary(
         let clean_template_markdown = template.to_markdown_structure();
         let section_instructions = template.to_section_instructions();
 
-        let final_system_prompt =
-            build_final_report_system_prompt(&section_instructions, &clean_template_markdown);
+        let final_system_prompt = build_final_report_system_prompt(
+            &section_instructions,
+            &clean_template_markdown,
+            attendees,
+        );
 
         let mut final_user_prompt = format!(
             "<transcript_chunks>\n{content_to_summarize}\n</transcript_chunks>\n"
@@ -726,7 +780,7 @@ mod tests {
 
     #[test]
     fn chunk_summary_prompt_forces_english_base_output() {
-        let prompt = build_chunk_summary_user_prompt("会議の内容");
+        let prompt = build_chunk_summary_user_prompt("会議の内容", None);
 
         assert!(prompt.contains(ENGLISH_BASE_SUMMARY_INSTRUCTION));
         assert!(prompt.contains("<transcript_chunk>"));
@@ -734,7 +788,7 @@ mod tests {
 
     #[test]
     fn combine_summary_prompt_forces_english_base_output() {
-        let prompt = build_combine_summary_user_prompt("chunk one\n---\nchunk two");
+        let prompt = build_combine_summary_user_prompt("chunk one\n---\nchunk two", None);
 
         assert!(prompt.contains(ENGLISH_BASE_SUMMARY_INSTRUCTION));
         assert!(prompt.contains("<summaries>"));
@@ -742,10 +796,45 @@ mod tests {
 
     #[test]
     fn final_report_prompt_forces_english_base_output() {
-        let prompt = build_final_report_system_prompt("Fill the section", "# <Add Title here>");
+        let prompt =
+            build_final_report_system_prompt("Fill the section", "# <Add Title here>", None);
 
         assert!(prompt.contains(ENGLISH_BASE_SUMMARY_INSTRUCTION));
         assert!(prompt.contains("SECTION-SPECIFIC INSTRUCTIONS"));
+    }
+
+    #[test]
+    fn chunk_and_final_prompts_contain_speaker_attribution_rules() {
+        let chunk_prompt = build_chunk_summary_user_prompt("hello", None);
+        let final_prompt = build_final_report_system_prompt("Fill", "# Title", None);
+
+        assert!(chunk_prompt.contains("SPEAKER ATTRIBUTION RULES"));
+        assert!(final_prompt.contains("SPEAKER ATTRIBUTION RULES"));
+        assert!(final_prompt.contains("Never guess"));
+    }
+
+    #[test]
+    fn prompts_include_attendee_roster_when_provided() {
+        let roster = "Renzo, Lean, Sofía";
+
+        let chunk_prompt = build_chunk_summary_user_prompt("hello", Some(roster));
+        let combine_prompt = build_combine_summary_user_prompt("a\n---\nb", Some(roster));
+        let final_prompt = build_final_report_system_prompt("Fill", "# Title", Some(roster));
+
+        for prompt in [&chunk_prompt, &combine_prompt, &final_prompt] {
+            assert!(prompt.contains("<attendees>"));
+            assert!(prompt.contains(roster));
+            assert!(prompt.contains("canonical spelling"));
+        }
+    }
+
+    #[test]
+    fn prompts_omit_attendee_block_when_absent_or_blank() {
+        for attendees in [None, Some(""), Some("   \n")] {
+            let prompt = build_final_report_system_prompt("Fill", "# Title", attendees);
+            assert!(!prompt.contains("<attendees>"));
+            assert!(!prompt.contains("\n\n\n"));
+        }
     }
 
     #[test]

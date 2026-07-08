@@ -12,6 +12,10 @@ interface TranscriptPanelProps {
   transcripts: Transcript[];
   customPrompt: string;
   onPromptChange: (value: string) => void;
+  attendees: string;
+  onAttendeesChange: (value: string) => void;
+  /** Persist the attendee roster (called on blur with the current value). */
+  onAttendeesSave: (value: string) => void;
   onCopyTranscript: () => void;
   onOpenMeetingFolder: () => Promise<void>;
   onExportMarkdown: (scope: ExportScope) => Promise<void>;
@@ -44,6 +48,9 @@ export function TranscriptPanel({
   transcripts,
   customPrompt,
   onPromptChange,
+  attendees,
+  onAttendeesChange,
+  onAttendeesSave,
   onCopyTranscript,
   onOpenMeetingFolder,
   onExportMarkdown,
@@ -226,9 +233,18 @@ export function TranscriptPanel({
         />
       </div>
 
-      {/* Custom prompt input at bottom of transcript section */}
+      {/* Attendees + custom prompt inputs at bottom of transcript section */}
       {!isRecording && !isEditMode && convertedSegments.length > 0 && (
-        <div className="p-1 border-t border-gray-200">
+        <div className="p-1 border-t border-gray-200 space-y-1">
+          <input
+            type="text"
+            placeholder="Attendees, e.g. Renzo, Lean, Sofía"
+            title="Used by AI summaries to spell names correctly and avoid misattributing who said what"
+            className="w-full px-3 py-2 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm"
+            value={attendees}
+            onChange={(e) => onAttendeesChange(e.target.value)}
+            onBlur={(e) => onAttendeesSave(e.target.value)}
+          />
           <textarea
             placeholder="Add context for AI summary. For example people involved, meeting overview, objective etc..."
             className="w-full px-3 py-2 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm min-h-[80px] resize-y"

@@ -187,7 +187,6 @@ export function ChatPanel({ meetingId, hasTranscripts }: ChatPanelProps) {
           />
           <Button
             type="submit"
-            variant="blue"
             size="icon"
             disabled={!input.trim() || !hasTranscripts || isSending || !model}
             aria-label="Send message"

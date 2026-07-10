@@ -5,7 +5,7 @@ import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRi
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar } from './SidebarProvider';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
-import { ConfirmationModal } from '../ConfirmationModel/confirmation-modal';
+import { ConfirmationModal } from '../ConfirmationModal/confirmation-modal';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { SettingTabs } from '../SettingTabs';
 import { TranscriptModelProps } from '@/components/TranscriptSettings';

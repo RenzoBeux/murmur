@@ -479,7 +479,7 @@ export function RediarizeDialog({
           <>
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
-                <Tag className="h-5 w-5 text-blue-600" />
+                <Tag className="h-5 w-5 text-brand" />
                 Name the speakers
               </DialogTitle>
               <DialogDescription>
@@ -501,14 +501,14 @@ export function RediarizeDialog({
                 return (
                   <div
                     key={s.speaker}
-                    className="rounded-lg border border-gray-200 p-3 space-y-2"
+                    className="rounded-lg border border-border p-3 space-y-2"
                   >
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
                         onClick={() => togglePlay(s)}
                         disabled={isLoading || !currentClip}
-                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground hover:bg-brand-hover disabled:opacity-60"
                         title={isPlaying ? 'Stop' : 'Play sample'}
                       >
                         {isLoading ? (
@@ -524,7 +524,7 @@ export function RediarizeDialog({
                           type="button"
                           onClick={() => nextClip(s)}
                           disabled={isLoading}
-                          className="flex h-8 shrink-0 items-center gap-1 rounded-full border border-gray-300 px-2 text-xs text-muted-foreground hover:bg-gray-100 disabled:opacity-60"
+                          className="flex h-8 shrink-0 items-center gap-1 rounded-full border border-border px-2 text-xs text-muted-foreground hover:bg-accent disabled:opacity-60"
                           title="Play a different sample of this voice"
                         >
                           <SkipForward className="h-3 w-3" />
@@ -567,7 +567,7 @@ export function RediarizeDialog({
                           setNames((prev) => ({ ...prev, [s.speaker]: e.target.value }))
                         }
                         placeholder={`Name (e.g. ${attendeeSuggestions[0] ?? 'Alice'})`}
-                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                       />
                     )}
                   </div>
@@ -593,7 +593,7 @@ export function RediarizeDialog({
               <Button
                 onClick={handleSaveNames}
                 disabled={isSavingNames || namedCount === 0}
-                className="bg-blue-600 hover:bg-blue-700"
+                className="bg-primary text-primary-foreground hover:bg-brand-hover"
               >
                 {isSavingNames ? (
                   <>
@@ -615,17 +615,17 @@ export function RediarizeDialog({
               <DialogTitle className="flex items-center gap-2">
                 {error ? (
                   <>
-                    <AlertCircle className="h-5 w-5 text-red-600" />
+                    <AlertCircle className="h-5 w-5 text-destructive" />
                     Speaker identification failed
                   </>
                 ) : isProcessing ? (
                   <>
-                    <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
+                    <Loader2 className="h-5 w-5 animate-spin text-brand" />
                     Identifying speakers…
                   </>
                 ) : (
                   <>
-                    <Users className="h-5 w-5 text-blue-600" />
+                    <Users className="h-5 w-5 text-brand" />
                     Identify speakers
                   </>
                 )}
@@ -728,7 +728,7 @@ export function RediarizeDialog({
                       placeholder="Auto-detect"
                       value={numSpeakers}
                       onChange={(e) => setNumSpeakers(e.target.value)}
-                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                     />
                     <p className="text-xs text-muted-foreground">
                       {micSeparated
@@ -747,16 +747,16 @@ export function RediarizeDialog({
                   {showingDownload ? (
                     <div className="space-y-2">
                       <div className="flex items-center gap-2 text-sm">
-                        <Download className="h-4 w-4 text-blue-600" />
+                        <Download className="h-4 w-4 text-brand" />
                         Downloading {download!.name} model…
                       </div>
-                      <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div className="w-full bg-muted rounded-full h-2">
                         <div
-                          className="bg-blue-600 h-2 rounded-full transition-all duration-200"
+                          className="bg-brand h-2 rounded-full transition-all duration-200"
                           style={{ width: `${Math.min(download!.percent, 100)}%` }}
                         />
                       </div>
-                      <div className="text-xs text-muted-foreground">
+                      <div className="text-xs text-muted-foreground font-mono tabular-nums">
                         {download!.percent}% ({Math.round(download!.downloaded / 1_048_576)} MB
                         of {Math.round(download!.total / 1_048_576)} MB)
                       </div>
@@ -764,11 +764,11 @@ export function RediarizeDialog({
                   ) : (
                     <>
                       <div className="flex items-center gap-2 text-sm">
-                        <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+                        <Loader2 className="h-4 w-4 animate-spin text-brand" />
                         {statusCopy(stage)}
                       </div>
-                      <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
-                        <div className="bg-blue-600 h-2 rounded-full animate-pulse w-1/2" />
+                      <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
+                        <div className="bg-brand h-2 rounded-full animate-pulse w-1/2" />
                       </div>
                       <div className="text-xs text-muted-foreground">
                         {provider === 'local' &&
@@ -784,8 +784,8 @@ export function RediarizeDialog({
               )}
 
               {error && (
-                <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                  <p className="text-sm text-red-800">{error}</p>
+                <div className="bg-destructive/10 border border-destructive/40 rounded-lg p-3">
+                  <p className="text-sm text-destructive">{error}</p>
                 </div>
               )}
             </div>
@@ -796,7 +796,7 @@ export function RediarizeDialog({
                   <Button variant="outline" onClick={() => onOpenChange(false)}>
                     Cancel
                   </Button>
-                  <Button onClick={handleStart} className="bg-blue-600 hover:bg-blue-700">
+                  <Button onClick={handleStart} className="bg-primary text-primary-foreground hover:bg-brand-hover">
                     <Users className="h-4 w-4 mr-2" />
                     Identify speakers
                   </Button>

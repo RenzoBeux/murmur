@@ -203,7 +203,7 @@ export default function PageContent({
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, ease: 'easeOut' }}
-      className="flex flex-col h-[calc(100vh-var(--titlebar-height))] bg-gray-50"
+      className="flex flex-col h-[calc(100vh-var(--titlebar-height))] bg-background"
     >
       <div className="flex flex-1 overflow-hidden">
         <TranscriptPanel
@@ -233,8 +233,8 @@ export default function PageContent({
           onRefetchTranscripts={onRefetchTranscripts}
           applyLocalMutation={applyLocalMutation}
         />
-        <Tabs defaultValue="summary" className="flex-1 min-w-0 flex flex-col bg-white overflow-hidden">
-          <div className="flex items-center justify-center border-b border-gray-200 px-4 py-2">
+        <Tabs defaultValue="summary" className="flex-1 min-w-0 flex flex-col bg-background overflow-hidden">
+          <div className="flex items-center justify-center border-b border-border px-4 py-2">
             <TabsList>
               <TabsTrigger value="summary" className="gap-1.5">
                 <FileText className="h-4 w-4" /> Summary

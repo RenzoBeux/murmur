@@ -163,9 +163,9 @@ export function TranscriptPanel({
   }, [isEditMode, editor.canUndo, editor.canRedo, editor.undo, editor.redo]);
 
   return (
-    <div className="flex w-2/5 sm:w-1/3 md:w-1/4 lg:w-1/3 min-w-0 border-r border-gray-200 bg-white flex-col relative shrink-0 @container">
+    <div className="flex w-2/5 sm:w-1/3 md:w-1/4 lg:w-1/3 min-w-0 border-r border-border bg-card flex-col relative shrink-0 @container">
       {/* Title area */}
-      <div className="p-4 border-b border-gray-200">
+      <div className="p-4 border-b border-border">
         <TranscriptButtonGroup
           transcriptCount={usePagination ? (totalCount ?? convertedSegments.length) : (transcripts?.length || 0)}
           onCopyTranscript={onCopyTranscript}
@@ -235,19 +235,19 @@ export function TranscriptPanel({
 
       {/* Attendees + custom prompt inputs at bottom of transcript section */}
       {!isRecording && !isEditMode && convertedSegments.length > 0 && (
-        <div className="p-1 border-t border-gray-200 space-y-1">
+        <div className="p-1 border-t border-border space-y-1">
           <input
             type="text"
             placeholder="Attendees, e.g. Renzo, Lean, Sofía"
             title="Used by AI summaries to spell names correctly and avoid misattributing who said what"
-            className="w-full px-3 py-2 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm"
+            className="w-full px-3 py-2 border border-border rounded-md text-sm focus:outline-none focus:ring-1 focus:ring-ring focus:border-brand bg-background shadow-sm"
             value={attendees}
             onChange={(e) => onAttendeesChange(e.target.value)}
             onBlur={(e) => onAttendeesSave(e.target.value)}
           />
           <textarea
             placeholder="Add context for AI summary. For example people involved, meeting overview, objective etc..."
-            className="w-full px-3 py-2 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm min-h-[80px] resize-y"
+            className="w-full px-3 py-2 border border-border rounded-md text-sm focus:outline-none focus:ring-1 focus:ring-ring focus:border-brand bg-background shadow-sm min-h-[80px] resize-y"
             value={customPrompt}
             onChange={(e) => onPromptChange(e.target.value)}
           />

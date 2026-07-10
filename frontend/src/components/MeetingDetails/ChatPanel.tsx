@@ -119,10 +119,10 @@ export function ChatPanel({ meetingId, hasTranscripts }: ChatPanelProps) {
   const ollamaModelNames = useMemo(() => models.map((m) => m.name), [models]);
 
   return (
-    <div className="flex h-full flex-col bg-white">
-      <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
-        <div className="flex items-center gap-2 text-sm font-medium text-gray-700">
-          <MessageSquare className="h-4 w-4 text-blue-500" />
+    <div className="flex h-full flex-col bg-background">
+      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+        <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+          <MessageSquare className="h-4 w-4 text-brand" />
           <span>Chat with this meeting</span>
         </div>
         <div className="flex items-center gap-2">
@@ -139,7 +139,7 @@ export function ChatPanel({ meetingId, hasTranscripts }: ChatPanelProps) {
             size="sm"
             onClick={handleClear}
             disabled={messages.length === 0 || isSending}
-            className="text-gray-500 hover:text-red-600"
+            className="text-muted-foreground hover:text-destructive"
           >
             <Trash2 className="h-4 w-4" />
             Clear
@@ -149,7 +149,7 @@ export function ChatPanel({ meetingId, hasTranscripts }: ChatPanelProps) {
 
       <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4">
         {isLoadingHistory ? (
-          <div className="flex h-full items-center justify-center text-sm text-gray-400">
+          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
             <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading chat…
           </div>
         ) : messages.length === 0 ? (
@@ -160,7 +160,7 @@ export function ChatPanel({ meetingId, hasTranscripts }: ChatPanelProps) {
               <MessageBubble key={msg.id} message={msg} />
             ))}
             {isSending && (
-              <div className="flex items-center gap-2 self-start rounded-lg bg-gray-100 px-3 py-2 text-sm text-gray-500">
+              <div className="flex items-center gap-2 self-start rounded-lg bg-muted px-3 py-2 text-sm text-muted-foreground">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 Thinking…
               </div>
@@ -170,7 +170,7 @@ export function ChatPanel({ meetingId, hasTranscripts }: ChatPanelProps) {
         )}
       </div>
 
-      <form onSubmit={handleSubmit} className="border-t border-gray-200 bg-gray-50 p-3">
+      <form onSubmit={handleSubmit} className="border-t border-border bg-muted p-3">
         <div className="flex items-end gap-2">
           <Textarea
             value={input}
@@ -183,7 +183,7 @@ export function ChatPanel({ meetingId, hasTranscripts }: ChatPanelProps) {
             }
             disabled={!hasTranscripts || isSending}
             rows={2}
-            className="flex-1 resize-none bg-white"
+            className="flex-1 resize-none bg-background"
           />
           <Button
             type="submit"
@@ -194,7 +194,7 @@ export function ChatPanel({ meetingId, hasTranscripts }: ChatPanelProps) {
             {isSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           </Button>
         </div>
-        <p className="mt-1 text-[11px] text-gray-400">Enter to send · Shift+Enter for newline</p>
+        <p className="mt-1 text-[11px] text-muted-foreground/70">Enter to send · Shift+Enter for newline</p>
       </form>
     </div>
   );
@@ -257,16 +257,16 @@ function ModelPicker({
         {groups.map((group, idx) => (
           <div key={group.provider}>
             {idx > 0 && <DropdownMenuSeparator />}
-            <DropdownMenuLabel className="flex items-center justify-between text-xs uppercase tracking-wide text-gray-500">
+            <DropdownMenuLabel className="flex items-center justify-between text-xs uppercase tracking-wide text-muted-foreground">
               <span>{PROVIDER_LABEL[group.provider]}</span>
               {group.disabledReason && (
-                <span className="text-[10px] text-amber-600 normal-case tracking-normal">
+                <span className="text-[10px] text-warning normal-case tracking-normal">
                   {group.disabledReason}
                 </span>
               )}
             </DropdownMenuLabel>
             {group.models.length === 0 ? (
-              <div className="px-2 py-1.5 text-xs text-gray-400">No models available</div>
+              <div className="px-2 py-1.5 text-xs text-muted-foreground">No models available</div>
             ) : (
               group.models.map((m) => {
                 const isActive = group.provider === provider && m === model;
@@ -275,7 +275,7 @@ function ModelPicker({
                     key={`${group.provider}-${m}`}
                     disabled={!!group.disabledReason}
                     onSelect={() => onPick(group.provider, m)}
-                    className={cn('text-sm', isActive && 'bg-blue-50 text-blue-700')}
+                    className={cn('text-sm', isActive && 'bg-brand/10 text-brand')}
                   >
                     <span className="truncate">{m}</span>
                   </DropdownMenuItem>
@@ -298,7 +298,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   if (isUser) {
     return (
       <div className="flex w-full justify-end">
-        <div className="max-w-[85%] whitespace-pre-wrap rounded-lg bg-blue-500 px-3 py-2 text-sm text-white shadow-sm">
+        <div className="max-w-[85%] whitespace-pre-wrap rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground shadow-sm">
           {message.content}
         </div>
       </div>
@@ -307,7 +307,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
 
   return (
     <div className="flex w-full justify-start">
-      <div className="w-full rounded-lg bg-gray-100 px-3 py-2 text-sm text-gray-800 shadow-sm">
+      <div className="w-full rounded-lg bg-card border border-border px-3 py-2 text-sm text-foreground shadow-sm">
         <MarkdownContent content={message.content} />
       </div>
     </div>
@@ -320,25 +320,25 @@ const MARKDOWN_COMPONENTS: Parameters<typeof ReactMarkdown>[0]['components'] = {
   p: ({ children }) => <p className="mb-2 last:mb-0 leading-relaxed">{children}</p>,
   ul: ({ children }) => <ul className="mb-2 last:mb-0 list-disc space-y-1 pl-5">{children}</ul>,
   ol: ({ children }) => <ol className="mb-2 last:mb-0 list-decimal space-y-1 pl-5">{children}</ol>,
-  li: ({ children }) => <li className="marker:text-gray-400">{children}</li>,
+  li: ({ children }) => <li className="marker:text-muted-foreground">{children}</li>,
   h1: ({ children }) => <h1 className="mb-2 mt-1 text-base font-semibold">{children}</h1>,
   h2: ({ children }) => <h2 className="mb-2 mt-1 text-sm font-semibold">{children}</h2>,
   h3: ({ children }) => <h3 className="mb-1 mt-1 text-sm font-semibold">{children}</h3>,
   strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
   em: ({ children }) => <em className="italic">{children}</em>,
   a: ({ href, children }) => (
-    <a href={href} target="_blank" rel="noreferrer" className="text-blue-600 underline">
+    <a href={href} target="_blank" rel="noreferrer" className="text-brand underline">
       {children}
     </a>
   ),
   blockquote: ({ children }) => (
-    <blockquote className="mb-2 border-l-2 border-gray-300 pl-3 italic text-gray-600">
+    <blockquote className="mb-2 border-l-2 border-border pl-3 italic text-muted-foreground">
       {children}
     </blockquote>
   ),
-  hr: () => <hr className="my-3 border-gray-200" />,
+  hr: () => <hr className="my-3 border-border" />,
   pre: ({ children }) => (
-    <pre className="mb-2 last:mb-0 overflow-x-auto rounded-md bg-gray-800 p-3 text-xs text-gray-100">
+    <pre className="mb-2 last:mb-0 overflow-x-auto rounded-md bg-muted p-3 text-xs text-foreground">
       {children}
     </pre>
   ),
@@ -350,7 +350,7 @@ const MARKDOWN_COMPONENTS: Parameters<typeof ReactMarkdown>[0]['components'] = {
       return <code className={className}>{children}</code>;
     }
     return (
-      <code className="rounded bg-gray-200 px-1 py-0.5 font-mono text-[0.85em]">{children}</code>
+      <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]">{children}</code>
     );
   },
   table: ({ children }) => (
@@ -359,9 +359,9 @@ const MARKDOWN_COMPONENTS: Parameters<typeof ReactMarkdown>[0]['components'] = {
     </div>
   ),
   th: ({ children }) => (
-    <th className="border border-gray-200 px-2 py-1 text-left font-semibold">{children}</th>
+    <th className="border border-border px-2 py-1 text-left font-semibold">{children}</th>
   ),
-  td: ({ children }) => <td className="border border-gray-200 px-2 py-1">{children}</td>,
+  td: ({ children }) => <td className="border border-border px-2 py-1">{children}</td>,
 };
 
 function MarkdownContent({ content }: { content: string }) {
@@ -390,10 +390,10 @@ function EmptyState({
 }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
-      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-50">
-        <Sparkles className="h-6 w-6 text-blue-500" />
+      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-brand/10">
+        <Sparkles className="h-6 w-6 text-brand" />
       </div>
-      <div className="max-w-sm text-sm text-gray-500">
+      <div className="max-w-sm text-sm text-muted-foreground">
         {hasTranscripts
           ? 'Ask follow-up questions about what was said. The assistant has access to the transcript and any generated summary.'
           : 'Record or import a meeting first. Once a transcript exists, you can chat with it here.'}
@@ -405,7 +405,7 @@ function EmptyState({
               key={s}
               type="button"
               onClick={() => onUseSuggestion(s)}
-              className="rounded-full border border-gray-200 bg-white px-3 py-1 text-xs text-gray-600 hover:border-blue-300 hover:text-blue-600"
+              className="rounded-full border border-border bg-secondary px-3 py-1 text-xs text-muted-foreground hover:border-brand/40 hover:text-brand"
             >
               {s}
             </button>

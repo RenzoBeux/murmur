@@ -606,25 +606,25 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
   };
 
   const renderErrorState = () => (
-    <div className="w-full p-4 bg-red-50 border border-red-200 rounded-lg">
+    <div className="w-full p-4 bg-destructive/10 border border-destructive/40 rounded-lg">
       <div className="flex items-center mb-2">
-        <AlertTriangle className="h-5 w-5 text-red-500 mr-2" />
-        <h3 className="text-red-700 font-medium">Error Generating Summary</h3>
+        <AlertTriangle className="h-5 w-5 text-destructive mr-2" />
+        <h3 className="text-destructive font-medium">Error Generating Summary</h3>
       </div>
-      <p className="text-red-600 text-sm">{error}</p>
-      <p className="text-red-500 text-xs mt-2">Please check your model configuration and API keys, or try again.</p>
+      <p className="text-destructive text-sm">{error}</p>
+      <p className="text-destructive text-xs mt-2">Please check your model configuration and API keys, or try again.</p>
     </div>
   );
 
   const renderLoadingState = () => (
-    <div className="w-full p-4 bg-blue-50 border border-blue-200 rounded-lg">
+    <div className="w-full p-4 bg-brand/10 border border-brand/40 rounded-lg">
       <div className="flex items-center space-x-3">
-        <div className="animate-spin rounded-full h-5 w-5 border-2 border-blue-500 border-t-transparent"></div>
+        <div className="animate-spin rounded-full h-5 w-5 border-2 border-brand border-t-transparent"></div>
         <div>
-          <h3 className="text-blue-700 font-medium">
+          <h3 className="text-brand font-medium">
             {status === 'processing' ? 'Processing Transcript' : 'Generating Summary'}
           </h3>
-          <p className="text-blue-600 text-sm">
+          <p className="text-brand text-sm">
             {status === 'processing' 
               ? 'Analyzing your transcript...' 
               : 'Creating a detailed summary of your meeting...'}
@@ -648,9 +648,9 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
 
   if (!hasContent && status === 'completed') {
     return (
-      <div className="w-full p-4 bg-gray-50 border border-gray-200 rounded-lg text-center">
-        <p className="text-gray-600">No summary content available.</p>
-        <p className="text-gray-500 text-sm mt-1">Try generating a new summary.</p>
+      <div className="w-full p-4 bg-muted border border-border rounded-lg text-center">
+        <p className="text-muted-foreground">No summary content available.</p>
+        <p className="text-muted-foreground text-sm mt-1">Try generating a new summary.</p>
       </div>
     );
   }
@@ -672,7 +672,7 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
       {/* Context Menu */}
       {contextMenu.visible && selectedBlocks.length > 0 && (
         <div
-          className="fixed z-50 bg-white shadow-lg rounded-lg py-1 min-w-[160px] border border-gray-200
+          className="fixed z-50 bg-elevated shadow-glass rounded-lg py-1 min-w-[160px] border border-border
                      animate-in fade-in zoom-in-95 duration-150"
           style={{ 
             left: contextMenu.x, 
@@ -681,14 +681,14 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
           onClick={e => e.stopPropagation()}
         >
           <button
-            className="w-full px-4 py-2 text-left hover:bg-gray-100 flex items-center space-x-2"
+            className="w-full px-4 py-2 text-left hover:bg-accent flex items-center space-x-2"
             onClick={handleCopyBlocks}
           >
-            <span className="text-gray-600">📋</span>
+            <span className="text-muted-foreground">📋</span>
             <span>Copy {selectedBlocks.length > 1 ? `${selectedBlocks.length} blocks` : 'block'}</span>
           </button>
           <button
-            className="w-full px-4 py-2 text-left hover:bg-gray-100 text-red-600 flex items-center space-x-2"
+            className="w-full px-4 py-2 text-left hover:bg-accent text-destructive flex items-center space-x-2"
             onClick={handleDeleteBlocks}
           >
             <span>🗑️</span>

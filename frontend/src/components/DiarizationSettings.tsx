@@ -74,7 +74,7 @@ function SecretField({
             <div className="relative mx-1">
                 <Input
                     type={show ? 'text' : 'password'}
-                    className="pr-12 focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                    className="pr-12 focus:ring-1 focus:ring-ring focus:border-ring"
                     value={value}
                     onChange={(e) => setValue(e.target.value)}
                     placeholder={placeholder}
@@ -91,7 +91,7 @@ function SecretField({
                     size="sm"
                     onClick={handleSave}
                     disabled={isBusy || !isDirty}
-                    className="bg-blue-600 hover:bg-blue-700 text-white"
+                    className="bg-primary text-primary-foreground hover:bg-brand-hover"
                 >
                     {isBusy ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : null}
                     Save
@@ -122,20 +122,20 @@ function SecretField({
  */
 export function DiarizationSettings() {
     return (
-        <div className="border-t border-gray-200 pt-4 mt-2 space-y-5">
+        <div className="border-t border-border pt-4 mt-2 space-y-5">
             <div>
-                <Label className="block text-sm font-medium text-gray-700 mb-1">
+                <Label className="block text-sm font-medium text-muted-foreground mb-1">
                     Speaker identification (diarization)
                 </Label>
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-muted-foreground">
                     Runs on-device by default. The keys below unlock the higher-accuracy
                     options in the &quot;Identify speakers&quot; dialog — both are optional.
                 </p>
             </div>
 
             <div>
-                <Label className="block text-sm font-medium text-gray-700 mb-1">
-                    pyannoteAI API key <span className="font-normal text-gray-500">(cloud, best accuracy)</span>
+                <Label className="block text-sm font-medium text-muted-foreground mb-1">
+                    pyannoteAI API key <span className="font-normal text-muted-foreground">(cloud, best accuracy)</span>
                 </Label>
                 <SecretField
                     provider="pyannote"
@@ -145,16 +145,16 @@ export function DiarizationSettings() {
             </div>
 
             <div>
-                <Label className="block text-sm font-medium text-gray-700 mb-1">
-                    Hugging Face token <span className="font-normal text-gray-500">(Local Pro, fully private)</span>
+                <Label className="block text-sm font-medium text-muted-foreground mb-1">
+                    Hugging Face token <span className="font-normal text-muted-foreground">(Local Pro, fully private)</span>
                 </Label>
-                <p className="text-xs text-gray-500 mb-2">
+                <p className="text-xs text-muted-foreground mb-2">
                     Local Pro runs the pyannote community-1 model on this machine (first
                     use downloads ~1–2 GB). The model is gated: create a free Hugging Face
                     account, accept the conditions on the{' '}
                     <button
                         type="button"
-                        className="text-blue-600 hover:underline"
+                        className="text-brand hover:underline"
                         onClick={() =>
                             invoke('open_external_url', {
                                 url: 'https://huggingface.co/pyannote/speaker-diarization-community-1',

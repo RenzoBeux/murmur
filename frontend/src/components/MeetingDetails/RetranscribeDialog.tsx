@@ -278,17 +278,17 @@ export function RetranscribeDialog({
           <DialogTitle className="flex items-center gap-2">
             {isProcessing ? (
               <>
-                <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
+                <Loader2 className="h-5 w-5 animate-spin text-brand" />
                 Retranscribing...
               </>
             ) : error ? (
               <>
-                <AlertCircle className="h-5 w-5 text-red-600" />
+                <AlertCircle className="h-5 w-5 text-destructive" />
                 Retranscription Failed
               </>
             ) : (
               <>
-                <RefreshCw className="h-5 w-5 text-blue-600" />
+                <RefreshCw className="h-5 w-5 text-brand" />
                 Retranscribe Meeting
               </>
             )}
@@ -364,7 +364,7 @@ export function RetranscribeDialog({
           )}
 
           {!isProcessing && !error && channels >= 2 && (
-            <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-3 space-y-2">
+            <div className="rounded-lg border border-brand/40 bg-brand/10 p-3 space-y-2">
               <label className="flex items-start gap-2 cursor-pointer">
                 <input
                   type="checkbox"
@@ -384,7 +384,7 @@ export function RetranscribeDialog({
               </label>
               {separateChannels && (
                 <div className="pl-6 space-y-1">
-                  <span className="block text-xs font-medium text-gray-700">
+                  <span className="block text-xs font-medium text-muted-foreground">
                     Which channel is you?
                   </span>
                   <div className="flex gap-4">
@@ -415,15 +415,15 @@ export function RetranscribeDialog({
           {isProcessing && progress && (
             <div className="space-y-2">
               <div className="relative">
-                <div className="w-full bg-gray-200 rounded-full h-3">
+                <div className="w-full bg-muted rounded-full h-3">
                   <div
-                    className="bg-blue-600 h-3 rounded-full transition-all duration-300 ease-out"
+                    className="bg-brand h-3 rounded-full transition-all duration-300 ease-out"
                     style={{ width: `${Math.min(progress.progress_percentage, 100)}%` }}
                   />
                 </div>
-                <div className="flex justify-between text-xs text-gray-600 mt-1">
+                <div className="flex justify-between text-xs text-muted-foreground mt-1">
                   <span>{progress.stage}</span>
-                  <span>{Math.round(progress.progress_percentage)}%</span>
+                  <span className="font-mono tabular-nums">{Math.round(progress.progress_percentage)}%</span>
                 </div>
               </div>
               <p className="text-sm text-muted-foreground text-center">
@@ -433,8 +433,8 @@ export function RetranscribeDialog({
           )}
 
           {error && (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-              <p className="text-sm text-red-800">{error}</p>
+            <div className="bg-destructive/10 border border-destructive/40 rounded-lg p-3">
+              <p className="text-sm text-destructive">{error}</p>
             </div>
           )}
         </div>
@@ -447,7 +447,7 @@ export function RetranscribeDialog({
               </Button>
               <Button
                 onClick={() => setShowConfirm(true)}
-                className="bg-blue-600 hover:bg-blue-700"
+                className="bg-primary text-primary-foreground hover:bg-brand-hover"
                 disabled={!meetingFolderPath}
               >
                 <RefreshCw className="h-4 w-4 mr-2" />
@@ -484,7 +484,7 @@ export function RetranscribeDialog({
         <DialogContent className="sm:max-w-[420px]">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <AlertCircle className="h-5 w-5 text-amber-600" />
+              <AlertCircle className="h-5 w-5 text-warning" />
               Reset speaker tags?
             </DialogTitle>
             <DialogDescription>
@@ -497,7 +497,7 @@ export function RetranscribeDialog({
             </Button>
             <Button
               onClick={handleStartRetranscription}
-              className="bg-blue-600 hover:bg-blue-700"
+              className="bg-primary text-primary-foreground hover:bg-brand-hover"
             >
               <RefreshCw className="h-4 w-4 mr-2" />
               Yes, Retranscribe

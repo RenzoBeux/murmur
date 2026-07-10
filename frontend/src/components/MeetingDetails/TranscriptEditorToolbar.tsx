@@ -48,9 +48,9 @@ export function TranscriptEditorToolbar({
   };
 
   return (
-    <div className="sticky top-0 z-20 bg-amber-50 border-b border-amber-200 px-3 py-2 flex flex-col gap-2">
+    <div className="sticky top-0 z-20 bg-elevated/90 backdrop-blur border-b border-border px-3 py-2 flex flex-col gap-2">
       <div className="flex items-center gap-2 flex-wrap">
-      <span className="text-xs font-medium text-amber-900 mr-1">
+      <span className="text-xs font-medium text-foreground mr-1">
         {hasSelection ? `${selectionCount} selected` : 'Edit mode — click rows to select'}
       </span>
 
@@ -103,7 +103,7 @@ export function TranscriptEditorToolbar({
         <button
           type="button"
           onClick={onClear}
-          className="ml-auto inline-flex items-center text-xs text-amber-900 hover:underline"
+          className="ml-auto inline-flex items-center text-xs text-muted-foreground hover:underline"
         >
           <X size={12} className="mr-0.5" />
           Clear
@@ -112,8 +112,8 @@ export function TranscriptEditorToolbar({
       </div>
 
       {pendingMergeSpeakers && (
-        <div className="bg-white border border-amber-300 rounded p-2 flex items-center gap-2 flex-wrap">
-          <span className="text-xs text-gray-700">
+        <div className="bg-card border border-border rounded p-2 flex items-center gap-2 flex-wrap">
+          <span className="text-xs text-muted-foreground">
             Different speakers — pick one for the merged segment:
           </span>
           {pendingMergeSpeakers.map((s) => {
@@ -126,7 +126,7 @@ export function TranscriptEditorToolbar({
                   onMerge?.(s);
                   setPendingMergeSpeakers(null);
                 }}
-                className={`text-xs px-2 py-1 rounded hover:ring-2 hover:ring-amber-300 ${label?.className ?? 'bg-gray-100'}`}
+                className={`text-xs px-2 py-1 rounded hover:ring-2 hover:ring-ring ${label?.className ?? 'bg-secondary'}`}
               >
                 {label?.label ?? s}
               </button>
@@ -138,14 +138,14 @@ export function TranscriptEditorToolbar({
               onMerge?.(null);
               setPendingMergeSpeakers(null);
             }}
-            className="text-xs px-2 py-1 rounded bg-gray-100 text-gray-600 hover:bg-gray-200"
+            className="text-xs px-2 py-1 rounded bg-secondary text-muted-foreground hover:bg-accent"
           >
             (clear)
           </button>
           <button
             type="button"
             onClick={() => setPendingMergeSpeakers(null)}
-            className="text-xs text-gray-500 hover:underline ml-auto"
+            className="text-xs text-muted-foreground hover:underline ml-auto"
           >
             Cancel
           </button>

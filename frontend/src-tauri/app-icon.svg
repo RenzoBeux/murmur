@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Meetily app icon source. Regenerate the icon set with:
+       cd frontend && pnpm tauri icon src-tauri/app-icon.svg -->
+  <defs>
+    <linearGradient id="bars" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9D8CFF"/>
+      <stop offset="1" stop-color="#7C6CFF"/>
+    </linearGradient>
+  </defs>
+  <rect x="102" y="102" width="820" height="820" rx="184" fill="#1A1A1E"/>
+  <rect x="106" y="106" width="812" height="812" rx="180" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="8"/>
+  <g fill="url(#bars)">
+    <rect x="245" y="272" width="90" height="480" rx="45"/>
+    <rect x="393" y="372" width="90" height="280" rx="45"/>
+    <rect x="541" y="372" width="90" height="280" rx="45"/>
+    <rect x="689" y="272" width="90" height="480" rx="45"/>
+  </g>
+</svg>

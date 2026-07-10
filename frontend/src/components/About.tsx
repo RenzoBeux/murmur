@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
-import Image from 'next/image';
+import { Logomark } from './brand/Logomark';
 
 
 export function About() {
@@ -24,14 +24,8 @@ export function About() {
         <div className="p-4 space-y-4 h-[80vh] overflow-y-auto">
             {/* Compact Header */}
             <div className="text-center">
-                <div className="mb-3">
-                    <Image
-                        src="icon_128x128.png"
-                        alt="Meetily Logo"
-                        width={64}
-                        height={64}
-                        className="mx-auto"
-                    />
+                <div className="mb-3 flex justify-center">
+                    <Logomark size={64} />
                 </div>
                 {/* <h1 className="text-xl font-bold text-gray-900">Meetily</h1> */}
                 <span className="text-sm text-gray-500"> v{currentVersion}</span>

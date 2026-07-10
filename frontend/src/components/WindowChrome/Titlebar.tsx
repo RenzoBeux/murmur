@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { usePlatform } from '@/hooks/usePlatform'
 import { WindowControls } from '@/components/WindowChrome/WindowControls'
+import { Logomark } from '@/components/brand/Logomark'
 
 export const TITLEBAR_HEIGHT = '2.5rem'
 
@@ -43,6 +44,7 @@ export function Titlebar() {
         data-tauri-drag-region
         className={`flex items-center gap-2 ${platform === 'macos' ? 'pl-20' : 'pl-4'}`}
       >
+        <Logomark size={16} className="pointer-events-none" />
         <span className="text-caption font-medium text-muted-foreground pointer-events-none">
           Meetily
         </span>

@@ -40,6 +40,14 @@ const EMBEDDING_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/down
 const EMBEDDING_FILENAME: &str = "wespeaker_en_voxceleb_resnet293_LM.onnx";
 const EMBEDDING_MIN_BYTES: u64 = 60 * 1024 * 1024; // 60 MB floor (real ~109 MB)
 
+// SHA-256 pins for integrity verification. The segmentation digest is of the
+// downloaded `.tar.bz2` archive (verified before extraction); the embedding
+// digest is of the `.onnx` file itself.
+const SEGMENTATION_ARCHIVE_SHA256: &str =
+    "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488";
+const EMBEDDING_SHA256: &str =
+    "f65dbc820e534eef64ae12d1e289e20244d60e60f7f00d7b092092b1c458be2e";
+
 #[derive(Debug, Clone)]
 pub struct DiarizationModelPaths {
     pub segmentation: PathBuf,
@@ -115,6 +123,7 @@ pub async fn ensure_models<R: Runtime>(app: &AppHandle<R>) -> Result<Diarization
             SEGMENTATION_URL,
             &dir,
             SEGMENTATION_FILENAME,
+            Some(SEGMENTATION_ARCHIVE_SHA256),
         )
         .await?;
         if !file_at_least(&seg_path, SEGMENTATION_MIN_BYTES).await {
@@ -127,7 +136,7 @@ pub async fn ensure_models<R: Runtime>(app: &AppHandle<R>) -> Result<Diarization
 
     if !file_at_least(&emb_path, EMBEDDING_MIN_BYTES).await {
         info!("Downloading 3D-Speaker embedding model to {}", emb_path.display());
-        download_file(app, "embedding", EMBEDDING_URL, &emb_path).await?;
+        download_file(app, "embedding", EMBEDDING_URL, &emb_path, Some(EMBEDDING_SHA256)).await?;
         if !file_at_least(&emb_path, EMBEDDING_MIN_BYTES).await {
             return Err(anyhow!(
                 "Embedding model missing after download: {}",
@@ -154,6 +163,7 @@ pub(crate) async fn download_file<R: Runtime>(
     name: &str,
     url: &str,
     dest: &std::path::Path,
+    expected_sha256: Option<&str>,
 ) -> Result<()> {
     let client = Client::new();
     let response = client
@@ -205,6 +215,10 @@ pub(crate) async fn download_file<R: Runtime>(
     file.flush()
         .await
         .map_err(|e| anyhow!("Failed to flush: {e}"))?;
+    // Verify integrity before the file is used. Deletes the file on mismatch.
+    if let Some(expected) = expected_sha256 {
+        crate::download_integrity::verify_sha256(dest, expected).await?;
+    }
     Ok(())
 }
 
@@ -214,9 +228,10 @@ async fn download_tar_bz2_member<R: Runtime>(
     url: &str,
     extract_dir: &std::path::Path,
     expected_member: &str,
+    archive_sha256: Option<&str>,
 ) -> Result<()> {
     let tmp = extract_dir.join(format!(".{name}.tar.bz2"));
-    download_file(app, name, url, &tmp).await?;
+    download_file(app, name, url, &tmp, archive_sha256).await?;
 
     let extract_owned = extract_dir.to_path_buf();
     let extract_for_closure = extract_owned.clone();

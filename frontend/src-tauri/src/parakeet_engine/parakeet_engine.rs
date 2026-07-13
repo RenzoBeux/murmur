@@ -590,12 +590,15 @@ impl ParakeetEngine {
             }
         }
 
-        // HuggingFace base URL for Parakeet models (version-specific)
-        let base_url = if model_name.contains("-v2-") {
-            "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx/resolve/main"
+        // HuggingFace base URL for Parakeet models, pinned to a specific commit
+        // so the per-file SHA-256 digests below stay valid. v3 was migrated off
+        // the uncontrolled host `meetily.towardsgeneralintelligence.com` to the
+        // official HF mirror published by the same author as v2.
+        let is_v2 = model_name.contains("-v2-");
+        let base_url = if is_v2 {
+            "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx/resolve/0bbb45a3365852604aef28b538a8f066f4ccaa85"
         } else {
-            // Default to v3 for v3 models
-            "https://meetily.towardsgeneralintelligence.com/models/parakeet-tdt-0.6b-v3-onnx"
+            "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce"
         };
 
         // Determine which files to download based on quantization
@@ -1006,6 +1009,63 @@ impl ParakeetEngine {
                 file_downloaded as f64 / 1_048_576.0,
                 (total_downloaded as f64 / total_size_bytes as f64) * 100.0
             );
+        }
+
+        // Verify every downloaded file against its pinned SHA-256 before making
+        // the model available. Covers freshly-downloaded and resumed-complete
+        // files; verify_sha256 deletes a file on mismatch.
+        fn parakeet_file_sha256(is_v2: bool, filename: &str) -> Option<&'static str> {
+            if is_v2 {
+                match filename {
+                    "encoder-model.int8.onnx" => Some("3e0581fda6ab843888b51e56d7ee78b6d5bc3237ec113af1f732d1d5286aa155"),
+                    "decoder_joint-model.int8.onnx" => Some("a449f49acd68979d418651dd2dcb737cc0f1bf0225e009e29ee326354edbf7d3"),
+                    "nemo128.onnx" => Some("a9fde1486ebfcc08f328d75ad4610c67835fea58c73ba57e3209a6f6cf019e9f"),
+                    "vocab.txt" => Some("ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d"),
+                    "encoder-model.onnx" => Some("3987bcd28175d829d12888a996a84e8f62a0e374d9ffd640662c1515adc679d3"),
+                    "decoder_joint-model.onnx" => Some("cbb52a07bd70ab5b67f8439d4b3cd8704b18467b4430bcacb5adabe154b8d191"),
+                    _ => None,
+                }
+            } else {
+                match filename {
+                    "encoder-model.int8.onnx" => Some("6139d2fa7e1b086097b277c7149725edbab89cc7c7ae64b23c741be4055aff09"),
+                    "decoder_joint-model.int8.onnx" => Some("eea7483ee3d1a30375daedc8ed83e3960c91b098812127a0d99d1c8977667a70"),
+                    "nemo128.onnx" => Some("a9fde1486ebfcc08f328d75ad4610c67835fea58c73ba57e3209a6f6cf019e9f"),
+                    "vocab.txt" => Some("d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d"),
+                    "encoder-model.onnx" => Some("98a74b21b4cc0017c1e7030319a4a96f4a9506e50f0708f3a516d02a77c96bb1"),
+                    "decoder_joint-model.onnx" => Some("e978ddf6688527182c10fde2eb4b83068421648985ef23f7a86be732be8706c1"),
+                    _ => None,
+                }
+            }
+        }
+        for filename in &files_to_download {
+            let file_path = model_dir.join(filename);
+            match parakeet_file_sha256(is_v2, filename) {
+                Some(expected) => {
+                    if let Err(e) =
+                        crate::download_integrity::verify_sha256(&file_path, expected).await
+                    {
+                        {
+                            let mut active = self.active_downloads.write().await;
+                            active.remove(model_name);
+                        }
+                        {
+                            let mut models = self.available_models.write().await;
+                            if let Some(model) = models.get_mut(model_name) {
+                                model.status = ModelStatus::Missing;
+                            }
+                        }
+                        return Err(anyhow!(
+                            "Parakeet integrity check failed for {}: {}",
+                            filename,
+                            e
+                        ));
+                    }
+                }
+                None => log::warn!(
+                    "No pinned SHA-256 for Parakeet file {} — skipping integrity check",
+                    filename
+                ),
+            }
         }
 
         // Report 100% progress with final speed

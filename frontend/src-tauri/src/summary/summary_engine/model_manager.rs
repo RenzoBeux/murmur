@@ -714,6 +714,25 @@ impl ModelManager {
         writer.flush().await?;
         drop(writer);
 
+        // Verify the downloaded bytes against the pinned digest before the file is
+        // usable. verify_sha256 deletes the file on mismatch.
+        if let Err(e) =
+            crate::download_integrity::verify_sha256(&file_path, &model_def.sha256).await
+        {
+            log::error!("Model integrity check failed for {}: {}", model_name, e);
+            {
+                let mut active = self.active_downloads.write().await;
+                active.remove(model_name);
+            }
+            {
+                let mut models = self.available_models.write().await;
+                if let Some(model_info) = models.get_mut(model_name) {
+                    model_info.status = ModelStatus::Error(format!("Integrity check failed: {}", e));
+                }
+            }
+            return Err(anyhow!("Model integrity check failed for {}: {}", model_name, e));
+        }
+
         log::info!("Download completed for model: {}", model_name);
 
         {

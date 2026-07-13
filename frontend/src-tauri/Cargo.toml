@@ -143,6 +143,10 @@ dirs = "5.0.1"
 # Additional dependencies for notification system
 url = "2.5.0"
 
+# Integrity verification (SHA-256) for model/binary downloads
+sha2 = "0.10"
+hex = "0.4"
+
 
 # System monitoring for resource management
 sysinfo = "0.32"
@@ -173,6 +177,7 @@ tauri-plugin-dialog = "2.3.0"
 tauri-plugin-store = "2.4.0"
 tauri-plugin-notification = "2.3.1"
 tauri-plugin-process = "2.3.0"
+tauri-plugin-opener = "2"
 
 # Desktop-only single instance guard
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]

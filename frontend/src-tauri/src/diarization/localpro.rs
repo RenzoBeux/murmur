@@ -36,24 +36,50 @@ const SIDECAR_SCRIPT: &str = include_str!("localpro_diarize.py");
 // First run: ~1–2 GB env + model download, then CPU/MPS inference. Generous.
 const JOB_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 
-fn uv_download_url() -> Result<&'static str> {
-    // `latest/download` avoids pinning; uv's CLI surface we use (run/--with)
-    // is stable.
-    if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        Ok("https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip")
+// Pinned uv release. `latest` is convenient but unverifiable; a fixed version
+// lets us pin a per-triple SHA-256 (from the release's `.sha256` sidecars).
+const UV_VERSION: &str = "0.11.28";
+
+/// The pinned uv download URL and its expected SHA-256 for this build target.
+fn uv_download() -> Result<(String, &'static str)> {
+    let (asset, sha256): (&str, &str) = if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        (
+            "uv-x86_64-pc-windows-msvc.zip",
+            "0a23463216d09c6a72ff80ef5dc5a795f07dc1575cb84d24596c2f124a441b7b",
+        )
     } else if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
-        Ok("https://github.com/astral-sh/uv/releases/latest/download/uv-aarch64-pc-windows-msvc.zip")
+        (
+            "uv-aarch64-pc-windows-msvc.zip",
+            "3248109afad3ec59baad299d324ff53de17e2d9a3b3e21580ffd26744b11e036",
+        )
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Ok("https://github.com/astral-sh/uv/releases/latest/download/uv-aarch64-apple-darwin.tar.gz")
+        (
+            "uv-aarch64-apple-darwin.tar.gz",
+            "33540eb7c883ab857eff79bd5ac2aa31fe27b595abecb4a9c003a2c998447232",
+        )
     } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        Ok("https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-apple-darwin.tar.gz")
+        (
+            "uv-x86_64-apple-darwin.tar.gz",
+            "2ad79983127ffca7d77b77ce6a24278d7e4f7b817a1acf72fea5f8124b4aac5e",
+        )
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Ok("https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz")
+        (
+            "uv-x86_64-unknown-linux-gnu.tar.gz",
+            "e490a6464492183c5d4534a5527fb4440f7f2bb2f228162ad7e4afe076dc0224",
+        )
     } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        Ok("https://github.com/astral-sh/uv/releases/latest/download/uv-aarch64-unknown-linux-gnu.tar.gz")
+        (
+            "uv-aarch64-unknown-linux-gnu.tar.gz",
+            "03e9fe0a81b0718d0bc84625de3885df6cc3f89a8b6af6121d6b9f6113fb6533",
+        )
     } else {
-        Err(anyhow!("Local Pro diarization is not supported on this platform"))
-    }
+        return Err(anyhow!("Local Pro diarization is not supported on this platform"));
+    };
+    let url = format!(
+        "https://github.com/astral-sh/uv/releases/download/{}/{}",
+        UV_VERSION, asset
+    );
+    Ok((url, sha256))
 }
 
 fn uv_binary_name() -> &'static str {
@@ -125,11 +151,11 @@ async fn ensure_uv<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf> {
         return Ok(uv_path);
     }
 
-    let url = uv_download_url()?;
-    info!("Downloading uv bootstrap binary from {url}");
+    let (url, sha256) = uv_download()?;
+    info!("Downloading uv {UV_VERSION} from {url}");
     let suffix = if url.ends_with(".zip") { "zip" } else { "tar.gz" };
     let archive = dir.join(format!(".uv-download.{suffix}"));
-    download_file(app, "uv", url, &archive).await?;
+    download_file(app, "uv", &url, &archive, Some(sha256)).await?;
 
     let archive_clone = archive.clone();
     let uv_clone = uv_path.clone();

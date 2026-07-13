@@ -13,6 +13,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { formatSpeaker } from '@/lib/speakerLabel';
+import { CloudBadge } from '@/components/CloudBadge';
 
 interface RediarizeDialogProps {
   open: boolean;
@@ -654,6 +655,7 @@ export function RediarizeDialog({
                       />
                       <span>
                         On-device <span className="text-muted-foreground">(private)</span>
+                        <CloudBadge locality="local" className="ml-1 align-middle" />
                         <span className="block text-xs text-muted-foreground">
                           Audio never leaves this machine.
                         </span>
@@ -674,6 +676,7 @@ export function RediarizeDialog({
                       />
                       <span>
                         Local Pro <span className="text-muted-foreground">(best private option)</span>
+                        <CloudBadge locality="local" className="ml-1 align-middle" />
                         <span className="block text-xs text-muted-foreground">
                           {hasHfToken
                             ? 'pyannote community-1 running fully on this machine.'
@@ -696,6 +699,7 @@ export function RediarizeDialog({
                       />
                       <span>
                         pyannoteAI cloud <span className="text-muted-foreground">(best accuracy)</span>
+                        <CloudBadge locality="cloud" className="ml-1 align-middle" />
                         <span className="block text-xs text-muted-foreground">
                           {hasCloudKey
                             ? 'Uploads this meeting’s audio (your own voice silenced) to pyannote.ai.'

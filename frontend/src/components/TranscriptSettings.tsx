@@ -8,6 +8,8 @@ import { Eye, EyeOff, Lock, Unlock } from 'lucide-react';
 import { ModelManager } from './WhisperModelManager';
 import { ParakeetModelManager } from './ParakeetModelManager';
 import { DiarizationSettings } from './DiarizationSettings';
+import { CloudBadge } from './CloudBadge';
+import { transcriptionLocality } from '@/lib/providerLocality';
 
 
 export interface TranscriptModelProps {
@@ -104,9 +106,12 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                 </div> */}
                 <div className="space-y-4 pb-6">
                     <div>
-                        <Label className="block text-sm font-medium text-muted-foreground mb-1">
-                            Transcript Model
-                        </Label>
+                        <div className="flex items-center gap-2 mb-1">
+                            <Label className="block text-sm font-medium text-muted-foreground">
+                                Transcript Model
+                            </Label>
+                            <CloudBadge locality={transcriptionLocality(uiProvider)} />
+                        </div>
                         <div className="flex space-x-2 mx-1">
                             <Select
                                 value={uiProvider}

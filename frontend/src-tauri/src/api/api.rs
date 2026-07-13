@@ -1273,22 +1273,26 @@ pub async fn open_meeting_folder<R: Runtime>(
 }
 
 #[tauri::command]
-pub async fn open_external_url(url: String) -> Result<(), String> {
-    use std::process::Command;
+pub async fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
 
-    let result = if cfg!(target_os = "windows") {
-        Command::new("cmd").args(&["/C", "start", &url]).output()
-    } else if cfg!(target_os = "macos") {
-        Command::new("open").arg(&url).output()
-    } else {
-        // Linux and other Unix-like systems
-        Command::new("xdg-open").arg(&url).output()
-    };
-
-    match result {
-        Ok(_) => Ok(()),
-        Err(e) => Err(format!("Failed to open URL: {}", e)),
+    // Validate and restrict the scheme before handing the URL to the OS.
+    // Prevents the old `cmd /C start <url>` metacharacter-injection class and
+    // blocks `file://`/custom-scheme handlers that could reach local resources.
+    let parsed = url::Url::parse(&url).map_err(|e| format!("Invalid URL: {}", e))?;
+    match parsed.scheme() {
+        "http" | "https" | "mailto" => {}
+        other => {
+            return Err(format!(
+                "Refusing to open URL with unsupported scheme: {}",
+                other
+            ))
+        }
     }
+
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| format!("Failed to open URL: {}", e))
 }
 
 // ===== CUSTOM OPENAI API COMMANDS =====

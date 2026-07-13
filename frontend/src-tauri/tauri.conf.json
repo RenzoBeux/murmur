@@ -29,7 +29,7 @@
                 "default-src": "'self'",
                 "style-src": "'self' 'unsafe-inline'",
                 "img-src": "'self' asset: https://asset.localhost data:",
-                "connect-src": "'self' http://localhost:11434 http://localhost:5167 http://localhost:8178 https://api.ollama.ai"
+                "connect-src": "'self' http://localhost:11434 https://api.ollama.ai"
             },
             "assetProtocol": {
                 "enable": true,
@@ -47,8 +47,6 @@
                     "permissions": [
                         "fs:default",
                         "fs:allow-read-file",
-                        "fs:read-all",
-                        "fs:write-all",
                         "fs:allow-app-read",
                         "fs:allow-app-write",
                         "fs:allow-download-write",
@@ -74,6 +72,7 @@
                         "notification:default",
                         "notification:allow-is-permission-granted",
                         "process:default",
+                        "opener:allow-open-url",
                         {
                             "identifier": "fs:scope",
                             "allow": [

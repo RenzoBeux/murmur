@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from 'react';
-import { useSidebar } from './Sidebar/SidebarProvider';
 import { invoke } from '@tauri-apps/api/core';
 import { Button } from '@/components/ui/button';
 import { useOllamaDownload } from '@/contexts/OllamaDownloadContext';
@@ -7,6 +6,8 @@ import { BuiltInModelManager } from '@/components/BuiltInModelManager';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useConfig } from '@/contexts/ConfigContext';
+import { CloudBadge } from '@/components/CloudBadge';
+import { summaryLocality } from '@/lib/providerLocality';
 import {
   Select,
   SelectContent,
@@ -130,7 +131,6 @@ export function ModelSettingsModal({
   const [showApiKey, setShowApiKey] = useState<boolean>(false);
   const [isApiKeyLocked, setIsApiKeyLocked] = useState<boolean>(!!modelConfig.apiKey?.trim());
   const [isLockButtonVibrating, setIsLockButtonVibrating] = useState<boolean>(false);
-  const { serverAddress } = useSidebar();
   const [openRouterModels, setOpenRouterModels] = useState<OpenRouterModel[]>([]);
   const [openRouterError, setOpenRouterError] = useState<string>('');
   const [isLoadingOpenRouter, setIsLoadingOpenRouter] = useState<boolean>(false);
@@ -919,7 +919,10 @@ export function ModelSettingsModal({
 
       <div className="space-y-4">
         <div>
-          <Label>Summarization Model</Label>
+          <div className="flex items-center gap-2">
+            <Label>Summarization Model</Label>
+            <CloudBadge locality={summaryLocality(modelConfig.provider, { customEndpoint: customOpenAIEndpoint })} />
+          </div>
           <div className="flex space-x-2 mt-1">
             <Select
               value={modelConfig.provider}

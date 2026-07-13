@@ -974,33 +974,41 @@ impl WhisperEngine {
             *cancel_flag = None;
         }
 
-        // Official ggerganov/whisper.cpp model URLs from Hugging Face
-        let model_url = match model_name {
+        // Pinned to a specific ggerganov/whisper.cpp revision so the per-model
+        // SHA-256 digests below stay valid (the `main` branch is mutable).
+        const WHISPER_REVISION: &str = "5359861c739e955e79d9a303bcbc70fb988958b1";
+
+        // Per-model SHA-256 read from the HF LFS pointers at WHISPER_REVISION.
+        // An unknown model has no pin and is rejected rather than fetched blind.
+        let expected_sha256: &str = match model_name {
             // Standard f16 models
-            "tiny" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
-            "base" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
-            "small" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
-            "medium" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
-            "large-v3-turbo" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
-            "large-v3" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
+            "tiny" => "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+            "base" => "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+            "small" => "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+            "medium" => "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
+            "large-v3-turbo" => "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
+            "large-v3" => "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2",
 
             // Q5_1 quantized models
-            "tiny-q5_1" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin",
-            "base-q5_1" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin",
-            "small-q5_1" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin",
+            "tiny-q5_1" => "818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7",
+            "base-q5_1" => "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898",
+            "small-q5_1" => "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
 
             // Q5_0 quantized models
-            "medium-q5_0" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium-q5_0.bin",
-            "large-v3-turbo-q5_0" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
-            "large-v3-q5_0" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-q5_0.bin",
+            "medium-q5_0" => "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f",
+            "large-v3-turbo-q5_0" => "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+            "large-v3-q5_0" => "d75795ecff3f83b5faa89d1900604ad8c780abd5739fae406de19f23ecd98ad1",
 
-            _ => return Err(anyhow!("Unsupported model: {}", model_name))
+            _ => return Err(anyhow!("Unsupported model: {}", model_name)),
         };
-        
-        log::info!("Model URL for {}: {}", model_name, model_url);
-        
-        // Generate correct filename - all models follow ggml-{model_name}.bin pattern
+
+        // All models follow the ggml-{model_name}.bin pattern.
         let filename = format!("ggml-{}.bin", model_name);
+        let model_url = format!(
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/{}/{}",
+            WHISPER_REVISION, filename
+        );
+        log::info!("Model URL for {}: {}", model_name, model_url);
         let file_path = self.models_dir.join(&filename);
         
         log::info!("Downloading to file path: {}", file_path.display());
@@ -1131,6 +1139,26 @@ impl WhisperEngine {
         
         file.flush().await
             .map_err(|e| anyhow!("Failed to flush file: {}", e))?;
+
+        // Verify the downloaded bytes against the pinned digest before making the
+        // model available. verify_sha256 deletes the file on mismatch.
+        if let Err(e) = crate::download_integrity::verify_sha256(&file_path, expected_sha256).await {
+            {
+                let mut active = self.active_downloads.write().await;
+                active.remove(model_name);
+            }
+            {
+                let mut models = self.available_models.write().await;
+                if let Some(model_info) = models.get_mut(model_name) {
+                    model_info.status = ModelStatus::Missing;
+                }
+            }
+            return Err(anyhow!(
+                "Whisper model integrity check failed for {}: {}",
+                model_name,
+                e
+            ));
+        }
         
         log::info!("Download completed for model: {}", model_name);
         

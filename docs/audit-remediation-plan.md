@@ -6,6 +6,38 @@ Companion to [`audit-2026-07-11.md`](audit-2026-07-11.md). It plans **only the w
 
 ---
 
+## Implementation status — updated 2026-07-13 (READ THIS FIRST to continue)
+
+Delivered as **stacked branches / PRs** off `main` (each PR bases on the previous, so the tip branch contains everything). Every wave was verified: `cargo check` 0 errors, `cargo test --lib` green (227 → 240, +13 new tests), `tsc --noEmit` 0 errors. **Runtime audio/summary/recovery flows still need a manual app run to confirm** (can't be driven headlessly).
+
+| Wave | Status | Branch | PR |
+|---|---|---|---|
+| 0 — P0 data-loss holes | ✅ shipped (11 tasks) | `feat/remediation-wave-0` | #1 → `fix/data-safety-quick-wins` |
+| 1 — summary/output correctness | ✅ shipped (7 tasks) | `feat/remediation-wave-1` | #2 → wave-0 |
+| 2 — filesystem recovery | ✅ shipped (5 tasks) | `feat/remediation-wave-2` | #3 → wave-1 |
+| 3a — recording safety (error-stop finalize + startup preflight) | ✅ shipped (2 tasks) | `feat/remediation-wave-3a` | #4 → wave-2 |
+| 3b — recording trust HUD (real levels, device banners, silence watchdog, speech badge, system-audio, + toast-flood hotfix) | ✅ shipped (~8 tasks) | `feat/remediation-wave-3b` | #5 → wave-3a |
+| **3c — audio-quality DSP** | ⏳ **not started** | — | — |
+| **4 — security & privacy** | ⏳ **not started** | — | — |
+| **5 — robustness debt (crash-safety, frontend bugs, tests)** | ⏳ **not started** | — | — |
+| **6 — product features** | ⏳ **not started** | — | — |
+
+**Repo:** GitHub `RenzoBeux/murmur` (NOT the `gh` default `Zackriya-Solutions/meetily` — always pass `--repo RenzoBeux/murmur`). The base commits `99924d5`/`e1ad60c` and all wave branches were pushed there; `main` on origin is behind at `4aca29e`.
+
+**How to continue in a fresh session:** the tip branch `feat/remediation-wave-3b` (+ hotfix commit) has all shipped work. Start the next wave on a new branch stacked on it, keep the wave-by-wave + checkpoint cadence, PR into the previous wave branch, verify with `cargo check`/`cargo test`/`tsc`. Recommended next: **Wave 4 (security)** — self-contained, no audio-pipeline risk.
+
+**Still to implement (in-scope, per the wave sections below):**
+- **Wave 3c** — `vad-sinc-resample`, `ringbuffer-tail-flush`, `system-loudness-before-vad` (deferred from 3b: real-time audio, highest regression risk, wants a mic A/B test). *(zeropad-mic-system-desync stays P2-deferred.)*
+- **Wave 4** — all 8 tasks (CSP cleanup, opener fix, download SHA-256 pinning ×3 + helper, fs-scope, cloud indicator). Keychain (4.7/4.8) is in the deferred backlog.
+- **Wave 5** — 5A crash-safety (7 tasks, minus the XL `audio-ownership-thread`), 5B frontend bugs (7), 5C CI/tests (10).
+- **Wave 6** — 6 product tasks (created_at, dated sidebar, language pick, title prompt, backup/restore UI, bulk export). Tags + FTS5 are deferred backlog.
+
+**Deferred backlog (own passes — XL / schema migration / new dep):** `audio-ownership-thread` (then `auto-reconnect-backoff` + `windows-loopback-rebind`), `soft-delete-undo`, keychain, `meeting-tags`, FTS5.
+
+**Documented follow-ups inside shipped waves:** Wave 1 — surface partial-coverage / chat-windowed truncation as **UI toasts** (needs a `SummaryOutcome` return-shape refactor; currently only logs). Wave 2 — richer `TranscriptRecovery` dialog integration (deduped startup toast is what shipped).
+
+---
+
 ## Wave overview
 
 | Wave | Theme | Why now | Rough size |

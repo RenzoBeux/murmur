@@ -18,17 +18,17 @@ Delivered as **stacked branches / PRs** off `main` (each PR bases on the previou
 | 3a — recording safety (error-stop finalize + startup preflight) | ✅ shipped (2 tasks) | `feat/remediation-wave-3a` | #4 → wave-2 |
 | 3b — recording trust HUD (real levels, device banners, silence watchdog, speech badge, system-audio, + toast-flood hotfix) | ✅ shipped (~8 tasks) | `feat/remediation-wave-3b` | #5 → wave-3a |
 | **3c — audio-quality DSP** | ⏳ **not started** | — | — |
-| **4 — security & privacy** | ⏳ **not started** | — | — |
+| 4 — security & privacy (CSP/serverAddress cleanup, opener hardening, SHA-256 verify helper + hash-pinning ×5 downloaders, fs-scope, cloud/local egress indicator) | ✅ shipped (8 tasks; keychain 4.7/4.8 deferred) | `feat/remediation-wave-4` | #6 → wave-3b |
 | **5 — robustness debt (crash-safety, frontend bugs, tests)** | ⏳ **not started** | — | — |
 | **6 — product features** | ⏳ **not started** | — | — |
 
 **Repo:** GitHub `RenzoBeux/murmur` (NOT the `gh` default `Zackriya-Solutions/meetily` — always pass `--repo RenzoBeux/murmur`). The base commits `99924d5`/`e1ad60c` and all wave branches were pushed there; `main` on origin is behind at `4aca29e`.
 
-**How to continue in a fresh session:** the tip branch `feat/remediation-wave-3b` (+ hotfix commit) has all shipped work. Start the next wave on a new branch stacked on it, keep the wave-by-wave + checkpoint cadence, PR into the previous wave branch, verify with `cargo check`/`cargo test`/`tsc`. Recommended next: **Wave 4 (security)** — self-contained, no audio-pipeline risk.
+**How to continue in a fresh session:** the tip branch `feat/remediation-wave-4` (PR #6 → wave-3b) has all shipped work. Start the next wave on a new branch stacked on it, keep the wave-by-wave + checkpoint cadence, PR into the previous wave branch, verify with `cargo check`/`cargo test`/`tsc`. Recommended next: **Wave 5C `ci-test-harness` first**, then Wave 5A/5B robustness, or **Wave 3c** audio-quality DSP (higher regression risk — wants a mic A/B test).
 
 **Still to implement (in-scope, per the wave sections below):**
 - **Wave 3c** — `vad-sinc-resample`, `ringbuffer-tail-flush`, `system-loudness-before-vad` (deferred from 3b: real-time audio, highest regression risk, wants a mic A/B test). *(zeropad-mic-system-desync stays P2-deferred.)*
-- **Wave 4** — all 8 tasks (CSP cleanup, opener fix, download SHA-256 pinning ×3 + helper, fs-scope, cloud indicator). Keychain (4.7/4.8) is in the deferred backlog.
+- ~~**Wave 4**~~ — ✅ shipped (PR #6). All 8 tasks: CSP/serverAddress cleanup, opener hardening, `download_integrity::verify_sha256` helper + hash-pinning across **5** downloaders (whisper/uv/diarization/parakeet/summary-GGUF, all pinned to immutable revisions; Parakeet v3 moved off the uncontrolled host to the HF mirror), fs-scope, cloud/local egress indicator. Keychain (4.7/4.8) stays in the deferred backlog. *Known limitation:* pre-existing on-disk models aren't retroactively re-hashed for summary/diarization/whisper (Parakeet does re-verify); a verify-on-load follow-up would close it.
 - **Wave 5** — 5A crash-safety (7 tasks, minus the XL `audio-ownership-thread`), 5B frontend bugs (7), 5C CI/tests (10).
 - **Wave 6** — 6 product tasks (created_at, dated sidebar, language pick, title prompt, backup/restore UI, bulk export). Tags + FTS5 are deferred backlog.
 

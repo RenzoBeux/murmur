@@ -47,9 +47,50 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
                 let _ = window.eval("window.location.assign('/settings')");
             }
         }
-        "quit" => app.exit(0),
+        "quit" => quit_handler(app),
         _ => {}
     }
+}
+
+/// Quit safely: if a recording is in progress, stop-and-drain it (writing the complete
+/// on-disk artifacts) BEFORE exiting, instead of a bare `app.exit(0)` that would drop the
+/// backlog and leave audio unfinalized.
+fn quit_handler<R: Runtime>(app: &AppHandle<R>) {
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if crate::is_recording().await {
+            // stop_recording force-flushes the pipeline, drains the transcription
+            // backlog, and writes the COMPLETE transcripts.json + finalized audio to
+            // disk. It clears IS_RECORDING, so the subsequent RunEvent::Exit save is a
+            // no-op. Next launch recovers the meeting from the on-disk artifacts.
+            set_tray_state(&app_clone, RecordingState::Stopping);
+            log::info!("Tray quit: stopping in-progress recording before exit...");
+
+            match app_clone.path().app_data_dir() {
+                Ok(dir) => {
+                    let timestamp =
+                        chrono::Local::now().format("%Y-%m-%dT%H-%M-%S").to_string();
+                    let save_path = dir
+                        .join(format!("recording-{}.wav", timestamp))
+                        .to_string_lossy()
+                        .to_string();
+                    if let Err(e) = crate::audio::recording_commands::stop_recording(
+                        app_clone.clone(),
+                        crate::audio::recording_commands::RecordingArgs { save_path },
+                    )
+                    .await
+                    {
+                        log::error!("Tray quit: stop_recording failed: {}", e);
+                    }
+                }
+                Err(e) => {
+                    // Exit anyway; RunEvent::Exit still attempts a best-effort persist.
+                    log::error!("Tray quit: failed to get app data dir: {}", e);
+                }
+            }
+        }
+        app_clone.exit(0);
+    });
 }
 fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
     focus_main_window(app);

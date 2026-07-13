@@ -326,10 +326,44 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         const recordingErrorUnsubscribe = await listen('recording-error', (event) => {
           console.error('recording-error event received:', event.payload);
           const payload = event.payload as unknown;
+          const isObj = typeof payload === 'object' && payload !== null;
           const message =
             typeof payload === 'string'
               ? payload
               : (payload as { message?: string })?.message || 'A recording error occurred';
+          const kind = isObj ? (payload as { kind?: string }).kind : undefined;
+          const meetingFolder = isObj
+            ? (payload as { meeting_folder?: string | null }).meeting_folder
+            : undefined;
+
+          // Audio finalize failed, but the meeting + checkpoint audio are on disk.
+          // Offer a one-click merge instead of letting the user discover silent audio loss.
+          if (kind === 'audio_save_failed' && meetingFolder) {
+            toast.error('Recording saved, but audio finalization failed', {
+              id: 'recording-error',
+              description: message,
+              duration: Infinity,
+              action: {
+                label: 'Merge audio',
+                onClick: () => {
+                  toast.loading('Merging audio…', { id: 'merge-audio' });
+                  invoke('recover_audio_from_checkpoints', {
+                    meetingFolder,
+                    sampleRate: 48000,
+                  })
+                    .then(() => toast.success('Audio recovered', { id: 'merge-audio' }))
+                    .catch((e) =>
+                      toast.error('Audio merge failed', {
+                        id: 'merge-audio',
+                        description: String(e),
+                      })
+                    );
+                },
+              },
+            });
+            return;
+          }
+
           // Stable id so repeated errors replace rather than stack into a toast pile.
           toast.error('Recording problem', { id: 'recording-error', description: message });
         });

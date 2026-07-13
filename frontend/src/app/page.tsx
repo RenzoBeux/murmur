@@ -77,23 +77,25 @@ export default function Home() {
           return;
         }
 
-        // 1. Clean up old meetings (7+ days)
+        // 1. Detect recoverable (unsaved) meetings FIRST, before any cleanup runs,
+        //    so crash data is never at risk of being purged before it is offered.
+        //    Don't skip based on sessionStorage - we need to check every time.
+        await checkForRecoverableTranscripts();
+
+        // 2. Clean up old meetings (7+ days) — only SAVED ones (deleteOldMeetings
+        //    now guards on savedToSQLite so unsaved crash journals are retained).
         try {
           await indexedDBService.deleteOldMeetings(7);
         } catch (error) {
           console.warn('⚠️ Failed to clean up old meetings:', error);
         }
 
-        // 2. Clean up saved meetings (24+ hours after save)
+        // 3. Clean up saved meetings (24+ hours after save)
         try {
           await indexedDBService.deleteSavedMeetings(24);
         } catch (error) {
           console.warn('⚠️ Failed to clean up saved meetings:', error);
         }
-
-        // 3. Always check for recoverable meetings on startup
-        // Don't skip based on sessionStorage - we need to check every time
-        await checkForRecoverableTranscripts();
       } catch (error) {
         console.error('Failed to perform startup checks:', error);
       }

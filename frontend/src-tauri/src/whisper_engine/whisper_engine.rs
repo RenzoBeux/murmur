@@ -847,15 +847,13 @@ impl WhisperEngine {
             }
         } else {
             if cleaned_result != final_result {
-                log::info!("Cleaned repetitive transcription #{}: '{}' -> '{}'", transcription_count, final_result, cleaned_result);
+                // Transcript text must never appear in a release log (privacy).
+                perf_debug!("Cleaned repetitive transcription #{}: '{}' -> '{}'", transcription_count, final_result, cleaned_result);
             }
-            // Reduce successful transcription logging frequency
-            // Only log every 5th result or significant results (>50 chars) to reduce I/O overhead
-            if transcription_count % 5 == 0 || cleaned_result.len() > 50 || duration_seconds > 10.0 {
-                log::info!("Transcription #{} result: '{}'", transcription_count, cleaned_result);
-            } else {
-                perf_debug!("Transcription #{} result: '{}'", transcription_count, cleaned_result);
-            }
+            // The result text goes only to perf_debug! (compiled out in release);
+            // keep a count-only info line for release observability.
+            perf_debug!("Transcription #{} result: '{}'", transcription_count, cleaned_result);
+            log::info!("Transcription #{} produced {} chars", transcription_count, cleaned_result.len());
         }
 
         Ok(cleaned_result)

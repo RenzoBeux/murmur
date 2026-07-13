@@ -41,16 +41,16 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
     try {
       const meetings = await indexedDBService.getAllMeetings();
 
-      // Filter out meetings older than 7 days and newer than 15 seconds
-      // The 15 seconds threshold prevents showing meetings from the current session(jus in case)
-      // where recording just stopped but hasn't been fully saved yet
-      const cutoffTime = Date.now() - (7 * 24 * 60 * 60 * 1000);
+      // Only the 15-second lower bound: hide meetings from the current session where
+      // recording just stopped but hasn't been fully saved yet. The old 7-day UPPER
+      // bound was dropped — getAllMeetings returns only unsaved (savedToSQLite===false)
+      // entries, so an old-but-unsaved crash journal is exactly the data we must still
+      // offer to recover, regardless of age (it is no longer purged by deleteOldMeetings).
       const secondsAgo = Date.now() - (15 * 1000);
 
       const recentMeetings = meetings.filter(m => {
-        const isWithinRetention = m.lastUpdated > cutoffTime; // Not older than 7 days
         const isOldEnough = m.lastUpdated < secondsAgo; // Older than 15 seconds
-        return isWithinRetention && isOldEnough;
+        return isOldEnough;
       });
 
       // Verify audio checkpoint availability for each meeting

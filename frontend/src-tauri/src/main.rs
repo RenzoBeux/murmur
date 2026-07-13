@@ -50,7 +50,11 @@ fn main() {
         return;
     }
 
-    std::env::set_var("RUST_LOG", "info");
+    // Default to info, but let the user lower it (e.g. RUST_LOG=warn) instead of
+    // forcing info unconditionally in release.
+    if std::env::var("RUST_LOG").is_err() {
+        std::env::set_var("RUST_LOG", "info");
+    }
     env_logger::init();
 
     // Async logger will be initialized lazily when first needed (after Tauri runtime starts)

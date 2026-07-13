@@ -1,19 +1,33 @@
 use chrono::Utc;
 use sqlx::{migrate::MigrateDatabase, Result, Sqlite, SqlitePool, Transaction};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tauri::Manager;
+
+/// Surfaced to the UI when startup WAL-corruption recovery ran, so the user learns
+/// their newest data was quarantined (not deleted) rather than silently set aside.
+#[derive(Clone, serde::Serialize)]
+pub struct RecoveryNotice {
+    /// Path to the pre-recovery copy of the main DB, if one was made.
+    pub backup_path: Option<String>,
+    /// Paths the corrupt `-wal`/`-shm` files were renamed to.
+    pub quarantined: Vec<String>,
+    pub recovered: bool,
+}
 
 #[derive(Clone)]
 pub struct DatabaseManager {
     pool: SqlitePool,
+    /// Set when startup WAL-corruption recovery ran; consumed once by the setup/import
+    /// paths to emit a `database-recovered` event.
+    pub recovery_notice: Option<RecoveryNotice>,
 }
 
 impl DatabaseManager {
     pub async fn new(tauri_db_path: &str, backend_db_path: &str) -> Result<Self> {
         if let Some(parent_dir) = Path::new(tauri_db_path).parent() {
             if !parent_dir.exists() {
-                fs::create_dir_all(parent_dir).map_err(|e| sqlx::Error::Io(e))?;
+                fs::create_dir_all(parent_dir).map_err(sqlx::Error::Io)?;
             }
         }
 
@@ -24,7 +38,10 @@ impl DatabaseManager {
                     backend_db_path,
                     tauri_db_path
                 );
-                fs::copy(backend_db_path, tauri_db_path).map_err(|e| sqlx::Error::Io(e))?;
+                // Copy the legacy .db AND its -wal/-shm sidecars (renamed to the .sqlite
+                // stem) so un-checkpointed rows in the legacy WAL are not lost on import.
+                Self::copy_db_with_sidecars(Path::new(backend_db_path), Path::new(tauri_db_path))
+                    .map_err(sqlx::Error::Io)?;
             } else {
                 log::info!("Creating database at {}", tauri_db_path);
                 Sqlite::create_database(tauri_db_path).await?;
@@ -33,9 +50,28 @@ impl DatabaseManager {
 
         let pool = SqlitePool::connect(tauri_db_path).await?;
 
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        // Snapshot the DB *before* applying pending migrations, so a migration that
+        // corrupts data on this launch can be recovered from a prior-state copy. Only
+        // when the DB pre-existed with applied migrations AND a newer migration is
+        // pending (skip fresh creates and no-op launches, or the backups dir balloons).
+        // Best-effort: a snapshot failure never blocks startup — only migrate() errors.
+        let migrator = sqlx::migrate!("./migrations");
+        let applied: Option<i64> = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .unwrap_or(None);
+        let latest = migrator.iter().map(|m| m.version).max();
+        if let (Some(a), Some(l)) = (applied, latest) {
+            if l > a {
+                Self::snapshot_pre_migration(&pool, tauri_db_path, a).await;
+            }
+        }
+        migrator.run(&pool).await?;
 
-        Ok(DatabaseManager { pool })
+        Ok(DatabaseManager {
+            pool,
+            recovery_notice: None,
+        })
     }
 
     // NOTE: So for the first time users they needs to start the application
@@ -49,7 +85,7 @@ impl DatabaseManager {
             .app_data_dir()
             .expect("failed to get app data dir");
         if !app_data_dir.exists() {
-            fs::create_dir_all(&app_data_dir).map_err(|e| sqlx::Error::Io(e))?;
+            fs::create_dir_all(&app_data_dir).map_err(sqlx::Error::Io)?;
         }
 
         // Define database paths
@@ -86,27 +122,39 @@ impl DatabaseManager {
                     // QUARANTINE, don't delete. This branch fires exactly after a crash —
                     // the case where the -wal may hold the newest committed meetings.
                     // Deleting it destroyed that data with no undo. Instead we snapshot the
-                    // main DB and rename the wal/shm aside so recovery is still possible.
+                    // main DB and rename the wal/shm aside so recovery is still possible,
+                    // and capture what we did into a RecoveryNotice so the UI can tell the user.
                     let ts = Utc::now().format("%Y%m%d-%H%M%S");
                     let main_path = Path::new(&tauri_db_path);
+                    let mut backup_path: Option<String> = None;
+                    let mut quarantined: Vec<String> = Vec::new();
                     if main_path.exists() {
                         let backup = format!("{}.corrupt-{}.bak", tauri_db_path, ts);
                         match fs::copy(main_path, &backup) {
-                            Ok(_) => log::warn!("Backed up main DB before recovery: {}", backup),
+                            Ok(_) => {
+                                log::warn!("Backed up main DB before recovery: {}", backup);
+                                backup_path = Some(backup);
+                            }
                             Err(e) => log::warn!("Failed to back up main DB before recovery: {}", e),
                         }
                     }
                     if wal_path.exists() {
-                        let quarantined = wal_path.with_extension(format!("sqlite-wal.corrupt-{}.bak", ts));
-                        match fs::rename(&wal_path, &quarantined) {
-                            Ok(_) => log::warn!("Quarantined WAL file to: {:?}", quarantined),
+                        let dest = wal_path.with_extension(format!("sqlite-wal.corrupt-{}.bak", ts));
+                        match fs::rename(&wal_path, &dest) {
+                            Ok(_) => {
+                                log::warn!("Quarantined WAL file to: {:?}", dest);
+                                quarantined.push(dest.to_string_lossy().to_string());
+                            }
                             Err(e) => log::warn!("Failed to quarantine WAL file: {}", e),
                         }
                     }
                     if shm_path.exists() {
-                        let quarantined = shm_path.with_extension(format!("sqlite-shm.corrupt-{}.bak", ts));
-                        match fs::rename(&shm_path, &quarantined) {
-                            Ok(_) => log::warn!("Quarantined SHM file to: {:?}", quarantined),
+                        let dest = shm_path.with_extension(format!("sqlite-shm.corrupt-{}.bak", ts));
+                        match fs::rename(&shm_path, &dest) {
+                            Ok(_) => {
+                                log::warn!("Quarantined SHM file to: {:?}", dest);
+                                quarantined.push(dest.to_string_lossy().to_string());
+                            }
                             Err(e) => log::warn!("Failed to quarantine SHM file: {}", e),
                         }
                     }
@@ -114,12 +162,20 @@ impl DatabaseManager {
                     // Retry connection after quarantining WAL files
                     log::info!("Retrying database connection after WAL quarantine...");
                     match Self::new(&tauri_db_path, &backend_db_path).await {
-                        Ok(db_manager) => {
+                        Ok(mut db_manager) => {
                             log::info!("Database opened successfully after WAL recovery");
+                            db_manager.recovery_notice = Some(RecoveryNotice {
+                                backup_path,
+                                quarantined,
+                                recovered: true,
+                            });
                             Ok(db_manager)
                         }
                         Err(retry_err) => {
-                            log::error!("Database connection failed even after WAL cleanup: {}", retry_err);
+                            log::error!(
+                                "Database connection failed even after WAL cleanup: {}",
+                                retry_err
+                            );
                             Err(retry_err)
                         }
                     }
@@ -155,7 +211,24 @@ impl DatabaseManager {
             .expect("failed to get app data dir");
 
         if !app_data_dir.exists() {
-            fs::create_dir_all(&app_data_dir).map_err(|e| sqlx::Error::Io(e))?;
+            fs::create_dir_all(&app_data_dir).map_err(sqlx::Error::Io)?;
+        }
+
+        // Fail loud if a real database already exists. new() only imports the legacy .db
+        // into a *non-existent* .sqlite; if a real .sqlite is already present the legacy
+        // data would be silently ignored while this command reports success — misleading
+        // the user into thinking their old history was imported. Block that instead.
+        let target_sqlite_path = app_data_dir.join("meeting_minutes.sqlite");
+        if let Ok(meta) = fs::metadata(&target_sqlite_path) {
+            // A real DB is a 100-byte header + at least one 4096-byte page. A near-empty
+            // placeholder from an aborted first run is not a genuine conflict.
+            if meta.len() > 4096 {
+                return Err(sqlx::Error::Protocol(format!(
+                    "A database already exists at {}. Importing would risk overwriting your current meetings. \
+                     Back up and remove the current database before importing the legacy one.",
+                    target_sqlite_path.display()
+                )));
+            }
         }
 
         // Copy legacy database to app data directory as meeting_minutes.db
@@ -183,7 +256,10 @@ impl DatabaseManager {
                 legacy_db_path,
                 target_legacy_path.display()
             );
-            fs::copy(legacy_db_path, &target_legacy_path).map_err(|e| sqlx::Error::Io(e))?;
+            // Copy the -wal/-shm sidecars too, so un-checkpointed rows in the legacy
+            // WAL survive the import.
+            Self::copy_db_with_sidecars(Path::new(legacy_db_path), &target_legacy_path)
+                .map_err(sqlx::Error::Io)?;
         }
 
         // Now use the standard initialization which will detect and migrate the legacy db
@@ -192,6 +268,88 @@ impl DatabaseManager {
 
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// Copy a SQLite DB and its `-wal`/`-shm` sidecars, renaming the sidecars to the
+    /// destination's stem so SQLite associates them with the copied DB. SQLite pairs a
+    /// `-wal` with its DB by filename, so `foo.db-wal` must become `foo.sqlite-wal` when
+    /// copying `foo.db` -> `foo.sqlite`, or the un-checkpointed data in it is ignored
+    /// (silent loss of the newest rows). The `-shm` is a derived cache; a copy failure
+    /// there is non-fatal.
+    fn copy_db_with_sidecars(src: &Path, dst: &Path) -> std::io::Result<()> {
+        fs::copy(src, dst)?;
+        for suffix in ["-wal", "-shm"] {
+            let mut src_side = src.as_os_str().to_os_string();
+            src_side.push(suffix);
+            let src_side = PathBuf::from(src_side);
+            if src_side.exists() {
+                let mut dst_side = dst.as_os_str().to_os_string();
+                dst_side.push(suffix);
+                let dst_side = PathBuf::from(dst_side);
+                if let Err(e) = fs::copy(&src_side, &dst_side) {
+                    log::warn!("Failed to copy DB sidecar {:?}: {}", src_side, e);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Best-effort `VACUUM INTO` snapshot into `<db_dir>/backups/pre-migration/`,
+    /// keeping the newest 5. Consistent even with an active WAL. Never blocks startup.
+    async fn snapshot_pre_migration(pool: &SqlitePool, db_path: &str, from_version: i64) {
+        let dir = match Path::new(db_path).parent() {
+            Some(p) => p.join("backups").join("pre-migration"),
+            None => return,
+        };
+        if let Err(e) = fs::create_dir_all(&dir) {
+            log::warn!("Failed to create pre-migration snapshot dir {:?}: {}", dir, e);
+            return;
+        }
+        let ts = Utc::now().format("%Y%m%d-%H%M%S");
+        let dest = dir.join(format!("pre-migration-v{}-{}.sqlite", from_version, ts));
+        // SQLite string literal: escape single quotes by doubling them.
+        let dest_sql = dest.to_string_lossy().replace('\'', "''");
+        match sqlx::query(&format!("VACUUM INTO '{}'", dest_sql))
+            .execute(pool)
+            .await
+        {
+            Ok(_) => log::info!("Pre-migration snapshot written: {:?}", dest),
+            Err(e) => {
+                log::warn!("Pre-migration snapshot failed (continuing): {}", e);
+                return;
+            }
+        }
+        Self::prune_snapshots(&dir, "pre-migration-", 5);
+    }
+
+    /// Keep only the newest `keep` `<name_prefix>*.sqlite` files in `dir`
+    /// (timestamped names sort chronologically). Best-effort.
+    fn prune_snapshots(dir: &Path, name_prefix: &str, keep: usize) {
+        let mut snapshots: Vec<_> = match fs::read_dir(dir) {
+            Ok(rd) => rd
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.starts_with(name_prefix) && n.ends_with(".sqlite"))
+                        .unwrap_or(false)
+                })
+                .collect(),
+            Err(e) => {
+                log::warn!("Failed to list snapshots for pruning in {:?}: {}", dir, e);
+                return;
+            }
+        };
+        snapshots.sort();
+        if snapshots.len() > keep {
+            for old in &snapshots[..snapshots.len() - keep] {
+                match fs::remove_file(old) {
+                    Ok(_) => log::info!("Pruned old snapshot: {:?}", old),
+                    Err(e) => log::warn!("Failed to prune old snapshot {:?}: {}", old, e),
+                }
+            }
+        }
     }
 
     /// Snapshot the live database to a rotating backup via `VACUUM INTO`, keeping the
@@ -220,33 +378,7 @@ impl DatabaseManager {
             }
         }
 
-        // Prune oldest snapshots beyond `keep`.
-        let mut snapshots: Vec<_> = match fs::read_dir(backups_dir) {
-            Ok(rd) => rd
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|n| n.starts_with("meeting_minutes-") && n.ends_with(".sqlite"))
-                        .unwrap_or(false)
-                })
-                .collect(),
-            Err(e) => {
-                log::warn!("Failed to list DB backups for pruning: {}", e);
-                return;
-            }
-        };
-        // Timestamped names sort chronologically; oldest first.
-        snapshots.sort();
-        if snapshots.len() > keep {
-            for old in &snapshots[..snapshots.len() - keep] {
-                match fs::remove_file(old) {
-                    Ok(_) => log::info!("Pruned old DB backup: {:?}", old),
-                    Err(e) => log::warn!("Failed to prune old DB backup {:?}: {}", old, e),
-                }
-            }
-        }
+        Self::prune_snapshots(backups_dir, "meeting_minutes-", keep);
     }
 
     pub async fn with_transaction<T, F, Fut>(&self, f: F) -> Result<T>
@@ -316,7 +448,7 @@ mod tests {
             .unwrap();
         sqlx::query("CREATE TABLE t (x INTEGER)").execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO t (x) VALUES (1)").execute(&pool).await.unwrap();
-        let mgr = DatabaseManager { pool };
+        let mgr = DatabaseManager { pool, recovery_notice: None };
 
         // Seed older snapshots whose timestamped names sort before today's real one.
         for name in [
@@ -350,6 +482,47 @@ mod tests {
             newest_len
         );
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn copy_db_with_sidecars_moves_wal_only_rows() {
+        let dir = std::env::temp_dir().join("murmur_copy_sidecars_test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // Build a WAL-mode source DB and leave a row un-checkpointed in the -wal.
+        let src = dir.join("legacy.db");
+        let src_url = format!("sqlite://{}?mode=rwc", src.to_string_lossy().replace('\\', "/"));
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&src_url)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA journal_mode=WAL").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE t (x INTEGER)").execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO t (x) VALUES (42)").execute(&pool).await.unwrap();
+        // Do NOT checkpoint; keep the pool (and its -wal) alive across the copy.
+        assert!(src.with_extension("db-wal").exists() || dir.join("legacy.db-wal").exists());
+
+        // Copy to a differently-stemmed destination.
+        let dst = dir.join("current.sqlite");
+        DatabaseManager::copy_db_with_sidecars(&src, &dst).unwrap();
+        assert!(dst.exists(), "main DB copied");
+        assert!(dir.join("current.sqlite-wal").exists(), "wal sidecar renamed to dest stem");
+
+        // Opening the destination must see the wal-only row.
+        let dst_url = format!("sqlite://{}?mode=ro", dst.to_string_lossy().replace('\\', "/"));
+        let dst_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&dst_url)
+            .await
+            .unwrap();
+        let n: i64 = sqlx::query_scalar("SELECT x FROM t").fetch_one(&dst_pool).await.unwrap();
+        assert_eq!(n, 42, "wal-only row must be present in the copy");
+
+        dst_pool.close().await;
+        pool.close().await;
         let _ = fs::remove_dir_all(&dir);
     }
 }

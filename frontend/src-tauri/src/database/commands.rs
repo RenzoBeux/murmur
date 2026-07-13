@@ -160,6 +160,9 @@ pub async fn import_and_initialize_database(
             format!("Failed to import database: {}", e)
         })?;
 
+    // If WAL-corruption recovery ran during open, notify the user.
+    super::setup::emit_recovery_notice(&app, &db_manager);
+
     // Update app state with the new manager
     app.manage(AppState { db_manager });
 
@@ -183,6 +186,9 @@ pub async fn initialize_fresh_database(app: AppHandle) -> Result<(), String> {
             error!("Failed to initialize fresh database: {}", e);
             format!("Failed to initialize database: {}", e)
         })?;
+
+    // If WAL-corruption recovery ran during open, notify the user.
+    super::setup::emit_recovery_notice(&app, &db_manager);
 
     // Update app state with the new manager
     app.manage(AppState { db_manager: db_manager.clone() });

@@ -4,6 +4,21 @@ use tauri::{AppHandle, Emitter, Manager};
 use super::manager::DatabaseManager;
 use crate::state::AppState;
 
+/// If startup WAL-corruption recovery ran, tell the user (after a short delay so the
+/// window/React listeners exist, mirroring the `first-launch-detected` pattern) that
+/// their newest data was quarantined as `.bak` files, not deleted.
+pub fn emit_recovery_notice(app: &AppHandle, db_manager: &DatabaseManager) {
+    if let Some(notice) = db_manager.recovery_notice.clone() {
+        let app_handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
+            if let Err(e) = app_handle.emit("database-recovered", notice) {
+                log::warn!("Failed to emit database-recovered event: {}", e);
+            }
+        });
+    }
+}
+
 /// Initialize database on app startup
 /// Handles first launch detection and conditional initialization
 pub async fn initialize_database_on_startup(app: &AppHandle) -> Result<(), String> {
@@ -29,6 +44,9 @@ pub async fn initialize_database_on_startup(app: &AppHandle) -> Result<(), Strin
         let db_manager = DatabaseManager::new_from_app_handle(app)
             .await
             .map_err(|e| format!("Failed to initialize database manager: {}", e))?;
+
+        // If WAL-corruption recovery ran during open, notify the user.
+        emit_recovery_notice(app, &db_manager);
 
         // Rotating startup backup (best-effort; keep the last 5 snapshots). Uses
         // VACUUM INTO, which is consistent even with an active WAL. This is the DB's

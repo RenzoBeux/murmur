@@ -24,6 +24,46 @@ pub fn reset_speech_detected_flag() {
     info!("🔍 SPEECH_DETECTED_EMITTED reset to: {}", SPEECH_DETECTED_EMITTED.load(Ordering::SeqCst));
 }
 
+// Global transcription progress, published by the worker so `get_transcription_status`
+// (a free Tauri command with no handle to the worker's internal Arcs) can report a real
+// in-flight backlog to the post-stop wait loop. Reset per recording session below.
+static TRANSCRIPTION_CHUNKS_QUEUED: AtomicU64 = AtomicU64::new(0);
+static TRANSCRIPTION_CHUNKS_COMPLETED: AtomicU64 = AtomicU64::new(0);
+static LAST_TRANSCRIPTION_ACTIVITY_MS: AtomicU64 = AtomicU64::new(0);
+
+fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Reset the global transcription counters at the start of a recording session so a
+/// leaked count from a prior session can never make `is_processing` stick true.
+pub fn reset_transcription_counters() {
+    TRANSCRIPTION_CHUNKS_QUEUED.store(0, Ordering::SeqCst);
+    TRANSCRIPTION_CHUNKS_COMPLETED.store(0, Ordering::SeqCst);
+    LAST_TRANSCRIPTION_ACTIVITY_MS.store(now_epoch_ms(), Ordering::SeqCst);
+}
+
+fn mark_transcription_completed() {
+    TRANSCRIPTION_CHUNKS_COMPLETED.fetch_add(1, Ordering::SeqCst);
+    LAST_TRANSCRIPTION_ACTIVITY_MS.store(now_epoch_ms(), Ordering::SeqCst);
+}
+
+/// Live transcription progress snapshot: (chunks_in_queue, is_processing, ms_since_last_activity).
+/// A staleness cap means a leaked counter can't hang the caller: once IS_RECORDING is off
+/// and no chunk has completed for >30s, we report idle regardless of the raw queue delta.
+pub fn transcription_progress(is_recording: bool) -> (usize, bool, u64) {
+    let queued = TRANSCRIPTION_CHUNKS_QUEUED.load(Ordering::SeqCst);
+    let completed = TRANSCRIPTION_CHUNKS_COMPLETED.load(Ordering::SeqCst);
+    let in_queue = queued.saturating_sub(completed) as usize;
+    let since_activity = now_epoch_ms().saturating_sub(LAST_TRANSCRIPTION_ACTIVITY_MS.load(Ordering::SeqCst));
+    let stale = !is_recording && since_activity > 30_000;
+    let is_processing = is_recording || (in_queue > 0 && !stale);
+    (if stale { 0 } else { in_queue }, is_processing, since_activity)
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TranscriptUpdate {
     pub text: String,
@@ -60,6 +100,9 @@ pub fn start_transcription_task<R: Runtime>(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         info!("🚀 Starting optimized parallel transcription task - guaranteeing zero chunk loss");
+
+        // Fresh session: clear any leaked progress from a prior recording.
+        reset_transcription_counters();
 
         // Initialize transcription engine (Whisper or Parakeet based on config)
         let transcription_engine = match super::engine::get_or_init_transcription_engine(&app).await {
@@ -149,6 +192,7 @@ pub fn start_transcription_task<R: Runtime>(
                                 warn!("⚠️ Worker {}: Model unloaded, but continuing to preserve chunk {}", worker_id, chunk.chunk_id);
                                 // Still count as completed even if we can't process
                                 chunks_completed_clone.fetch_add(1, Ordering::SeqCst);
+                                mark_transcription_completed();
                                 continue;
                             }
 
@@ -176,16 +220,20 @@ pub fn start_transcription_task<R: Runtime>(
                                         None => "N/A".to_string(),
                                     };
 
-                                    info!("🔍 Worker {} transcription result: text='{}', confidence={}, partial={}, threshold={:.2}",
+                                    // Transcript text must never appear in a release log (privacy).
+                                    perf_debug!("🔍 Worker {} transcription result: text='{}', confidence={}, partial={}, threshold={:.2}",
                                           worker_id, transcript, confidence_str, is_partial, confidence_threshold);
 
                                     // Check confidence threshold (or accept if no confidence provided)
                                     let meets_threshold = confidence_opt.map_or(true, |c| c >= confidence_threshold);
 
                                     if !transcript.trim().is_empty() && meets_threshold {
-                                        // PERFORMANCE: Only log transcription results, not every processing step
-                                        info!("✅ Worker {} transcribed: {} (confidence: {}, partial: {})",
+                                        // Transcript text only under perf_debug! (compiled out in release);
+                                        // keep a count-only info line for release observability.
+                                        perf_debug!("✅ Worker {} transcribed: {} (confidence: {}, partial: {})",
                                               worker_id, transcript, confidence_str, is_partial);
+                                        info!("✅ Worker {} transcribed {} chars (confidence: {}, partial: {})",
+                                              worker_id, transcript.len(), confidence_str, is_partial);
 
                                         // Emit speech-detected event for frontend UX (only on first detection per session)
                                         // This is lightweight and provides better user feedback
@@ -256,11 +304,13 @@ pub fn start_transcription_task<R: Runtime>(
                                             // Skip silently, this is expected for very short chunks
                                             info!("Worker {}: {}", worker_id, e);
                                             chunks_completed_clone.fetch_add(1, Ordering::SeqCst);
+                                            mark_transcription_completed();
                                             continue;
                                         }
                                         TranscriptionError::ModelNotLoaded => {
                                             warn!("Worker {}: Model unloaded during transcription", worker_id);
                                             chunks_completed_clone.fetch_add(1, Ordering::SeqCst);
+                                            mark_transcription_completed();
                                             continue;
                                         }
                                         _ => {
@@ -274,6 +324,7 @@ pub fn start_transcription_task<R: Runtime>(
                             // Mark chunk as completed
                             let completed =
                                 chunks_completed_clone.fetch_add(1, Ordering::SeqCst) + 1;
+                            mark_transcription_completed();
                             let queued = chunks_queued_clone.load(Ordering::SeqCst);
 
                             // PERFORMANCE: Only log progress every 5th chunk to reduce I/O overhead
@@ -338,6 +389,7 @@ pub fn start_transcription_task<R: Runtime>(
         let mut receiver = transcription_receiver;
         while let Some(chunk) = receiver.recv().await {
             let queued = chunks_queued.fetch_add(1, Ordering::SeqCst) + 1;
+            TRANSCRIPTION_CHUNKS_QUEUED.fetch_add(1, Ordering::SeqCst);
             info!(
                 "📥 Dispatching chunk {} to workers (total queued: {})",
                 chunk.chunk_id, queued

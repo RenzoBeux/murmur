@@ -553,6 +553,22 @@ pub async fn save_active_recording_on_exit<R: Runtime>(app: &AppHandle<R>) {
     }
     info!("💾 App exiting while recording — persisting current transcript before quit");
 
+    // Force-flush the pipeline so audio still buffered (not yet emitted as a
+    // transcript-update segment) is pushed into the transcription queue before we
+    // snapshot. Take the manager out (never hold the std mutex across .await), flush,
+    // then return it so the snapshot below sees the freshly flushed state.
+    //
+    // HONEST LIMITATION: this guarantees no buffered-but-unflushed audio is silently
+    // dropped, but it does NOT wait for the full transcription backlog to drain (that
+    // could take minutes and hang exit), and during RunEvent::Exit the transcript-update
+    // listener may not pump, so late segments produced by the flush may not append. Full
+    // backlog capture at quit comes from routing through stop_recording (tray quit).
+    let taken = { RECORDING_MANAGER.lock().unwrap().take() };
+    if let Some(mut manager) = taken {
+        let _ = manager.stop_streams_and_force_flush().await;
+        *RECORDING_MANAGER.lock().unwrap() = Some(manager);
+    }
+
     // Snapshot from the global manager without removing it (sync methods only; the
     // guard is dropped before any await, so no std mutex is held across .await).
     let snapshot = {
@@ -974,12 +990,18 @@ pub async fn is_recording() -> bool {
     IS_RECORDING.load(Ordering::SeqCst)
 }
 
-/// Get recording statistics
+/// Live transcription status. Reports a REAL in-flight backlog (queued minus completed,
+/// published by the transcription worker) so the post-stop wait loop actually waits for
+/// the queue to drain instead of exiting immediately on a hardcoded value.
+#[tauri::command]
 pub async fn get_transcription_status() -> TranscriptionStatus {
+    let is_recording = IS_RECORDING.load(Ordering::SeqCst);
+    let (chunks_in_queue, is_processing, last_activity_ms) =
+        crate::audio::transcription::worker::transcription_progress(is_recording);
     TranscriptionStatus {
-        chunks_in_queue: 0,
-        is_processing: IS_RECORDING.load(Ordering::SeqCst),
-        last_activity_ms: 0,
+        chunks_in_queue,
+        is_processing,
+        last_activity_ms,
     }
 }
 

@@ -345,7 +345,10 @@ class IndexedDBService {
       let deletedCount = 0;
 
       for (const meeting of allMeetings) {
-        if (meeting.lastUpdated < cutoffTime) {
+        // Only age-purge meetings already persisted to SQLite. Unsaved (crash) entries
+        // are the recovery journal and must never be silently purged by age — they are
+        // cleaned only after they have been recovered/saved (deleteSavedMeetings).
+        if (meeting.savedToSQLite === true && meeting.lastUpdated < cutoffTime) {
           // Delete transcripts
           await this.deleteTranscriptsForMeetingInternal(transcriptsStore, meeting.meetingId);
 

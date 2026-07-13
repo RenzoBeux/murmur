@@ -144,6 +144,26 @@ export default function RootLayout({
     };
   }, [showOnboarding]);
 
+  // Notify the user when the DB was recovered from WAL corruption at startup so they
+  // know their newest data was quarantined (not deleted).
+  useEffect(() => {
+    const unlisten = listen<{ backup_path: string | null; quarantined: string[]; recovered: boolean }>(
+      'database-recovered',
+      (event) => {
+        if (!event.payload?.recovered) return;
+        toast.warning('Recovered from a database problem', {
+          description:
+            'Your newest data was set aside safely as .bak files in the app data folder. Nothing was deleted.',
+          duration: Infinity,
+        });
+      }
+    );
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
   // Handle file drop for audio import
   const handleFileDrop = useCallback((paths: string[]) => {
     // Check if beta features are enabled (read from localStorage directly since we're outside ConfigProvider)

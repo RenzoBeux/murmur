@@ -75,9 +75,11 @@ impl RecordingManager {
         // CRITICAL FIX: Create recording sender for pre-mixed audio from pipeline
         // Pipeline will mix mic + system audio professionally and send to this channel
         // Pass auto_save to control whether audio checkpoints are created
+        // A meeting-folder init failure aborts the start here (before any state flip or
+        // stream creation), so we never record into a void with no on-disk artifacts.
         let recording_sender = self
             .recording_saver
-            .start_accumulation(auto_save, self.state.clone());
+            .start_accumulation(auto_save, self.state.clone())?;
 
         // Start recording state first
         self.state.start_recording()?;
@@ -316,13 +318,19 @@ impl RecordingManager {
                 error!("Failed to save recording: {}", e);
                 // Don't fail the stop operation, but surface it: the audio file may be
                 // missing/incomplete even though the meeting was saved. The frontend
-                // listens for `recording-error` and shows a toast so the user can act
-                // (e.g. re-merge checkpoints) instead of discovering silent audio loss.
+                // listens for `recording-error` and shows a toast with a "Merge audio"
+                // action (the checkpoints still live in `meeting_folder`) instead of
+                // the user discovering silent audio loss.
+                let meeting_folder = self
+                    .recording_saver
+                    .get_meeting_folder()
+                    .map(|p| p.to_string_lossy().to_string());
                 let _ = app.emit(
                     "recording-error",
                     serde_json::json!({
                         "kind": "audio_save_failed",
                         "message": format!("Failed to finalize recording audio: {}", e),
+                        "meeting_folder": meeting_folder,
                     }),
                 );
             }
@@ -364,11 +372,16 @@ impl RecordingManager {
             Err(e) => {
                 error!("Failed to save recording: {}", e);
                 // Surface the finalize failure (see save_recording_only for rationale).
+                let meeting_folder = self
+                    .recording_saver
+                    .get_meeting_folder()
+                    .map(|p| p.to_string_lossy().to_string());
                 let _ = app.emit(
                     "recording-error",
                     serde_json::json!({
                         "kind": "audio_save_failed",
                         "message": format!("Failed to finalize recording audio: {}", e),
+                        "meeting_folder": meeting_folder,
                     }),
                 );
             }

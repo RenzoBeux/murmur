@@ -145,7 +145,7 @@ impl RecordingSaver {
         &mut self,
         auto_save: bool,
         state: Arc<RecordingState>,
-    ) -> mpsc::UnboundedSender<AudioChunk> {
+    ) -> Result<mpsc::UnboundedSender<AudioChunk>> {
         if auto_save {
             info!("Initializing incremental audio saver for recording (auto-save ENABLED)");
         } else {
@@ -156,32 +156,19 @@ impl RecordingSaver {
         let (sender, receiver) = mpsc::unbounded_channel::<AudioChunk>();
         self.chunk_receiver = Some(receiver);
 
-        // Initialize meeting folder and incremental saver ONLY if auto_save is enabled
-        if auto_save {
-            if let Some(name) = self.meeting_name.clone() {
-                match self.initialize_meeting_folder(&name, true) {
-                    Ok(()) => info!("Successfully initialized meeting folder with checkpoints"),
-                    Err(e) => {
-                        error!("Failed to initialize meeting folder: {}", e);
-                        // There is NO flat-structure fallback: incremental_saver stays None,
-                        // so audio checkpoints and transcripts.json cannot be written for this
-                        // meeting. Surface it so the user isn't silently recording into a void;
-                        // the accumulation task below reports again if chunks can't be saved.
-                        state.report_error(AudioError::InitializationFailed);
-                    }
-                }
+        // Initialize the meeting folder (with .checkpoints/ only when auto_save is on).
+        // A failure here means we cannot persist audio checkpoints or transcripts.json —
+        // the meeting would record into a void with no on-disk artifacts, and there is
+        // NO flat-structure fallback. ABORT the start cleanly instead of continuing; the
+        // caller (recording_manager::start_recording) propagates this so IS_RECORDING is
+        // never flipped and the mic is released.
+        if let Some(name) = self.meeting_name.clone() {
+            if let Err(e) = self.initialize_meeting_folder(&name, auto_save) {
+                error!("Failed to initialize meeting folder: {}", e);
+                self.chunk_receiver = None; // don't leave a half-initialized channel
+                return Err(anyhow::anyhow!("Failed to initialize meeting folder: {}", e));
             }
-        } else {
-            // When auto_save is false, still create meeting folder for transcripts/metadata
-            // but skip .checkpoints directory
-            if let Some(name) = self.meeting_name.clone() {
-                match self.initialize_meeting_folder(&name, false) {
-                    Ok(()) => info!("Successfully initialized meeting folder (transcripts only)"),
-                    Err(e) => {
-                        error!("Failed to initialize meeting folder: {}", e);
-                    }
-                }
-            }
+            info!("Successfully initialized meeting folder (checkpoints: {})", auto_save);
         }
 
         // Start accumulation task
@@ -247,7 +234,7 @@ impl RecordingSaver {
             *is_saving = true;
         }
 
-        sender
+        Ok(sender)
     }
 
     /// Initialize meeting folder structure and metadata

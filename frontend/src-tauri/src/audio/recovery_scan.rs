@@ -60,10 +60,45 @@ fn title_from_folder_name(folder: &Path) -> String {
     }
 }
 
-/// Read `transcripts.json` into `api::TranscriptSegment`s, tolerant of BOTH on-disk writer
-/// shapes (recording_saver: `display_time`/`confidence`, no `timestamp`; common.rs:
-/// `timestamp`, no `display_time`). Always carries `speaker` through (this is the audit's
-/// "recovered segments drop speaker" fix at the disk layer). Sorted by `sequence_id`.
+/// Map one transcript-segment JSON object to `(sequence_id, segment)`, tolerant of BOTH
+/// on-disk writer shapes (recording_saver: `display_time`, no `timestamp`; common.rs:
+/// `timestamp`, no `display_time`). Always carries `speaker` through (the audit's
+/// "recovered segments drop speaker" fix at the disk layer). Returns None without an `id`.
+fn segment_from_value(seg: &serde_json::Value) -> Option<(u64, crate::api::api::TranscriptSegment)> {
+    let id = seg.get("id").and_then(|v| v.as_str())?.to_string();
+    let text = seg.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    // Prefer an explicit timestamp; fall back to display_time; else empty.
+    let timestamp = seg
+        .get("timestamp")
+        .and_then(|v| v.as_str())
+        .or_else(|| seg.get("display_time").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string();
+    let audio_start_time = seg.get("audio_start_time").and_then(|v| v.as_f64());
+    let audio_end_time = seg.get("audio_end_time").and_then(|v| v.as_f64());
+    let duration = seg.get("duration").and_then(|v| v.as_f64());
+    let speaker = seg
+        .get("speaker")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let sequence_id = seg.get("sequence_id").and_then(|v| v.as_u64()).unwrap_or(0);
+    Some((
+        sequence_id,
+        crate::api::api::TranscriptSegment {
+            id,
+            text,
+            timestamp,
+            audio_start_time,
+            audio_end_time,
+            duration,
+            speaker,
+        },
+    ))
+}
+
+/// Read the finalized `transcripts.json` into `api::TranscriptSegment`s, sorted by
+/// `sequence_id`. Written once at finalize (and by explicit rewrites).
 pub fn read_transcripts_json(folder: &Path) -> Vec<crate::api::api::TranscriptSegment> {
     let content = match std::fs::read_to_string(folder.join("transcripts.json")) {
         Ok(c) => c,
@@ -78,47 +113,49 @@ pub fn read_transcripts_json(folder: &Path) -> Vec<crate::api::api::TranscriptSe
         None => return Vec::new(),
     };
 
-    let mut out: Vec<(u64, crate::api::api::TranscriptSegment)> = segments
-        .iter()
-        .filter_map(|seg| {
-            let id = seg.get("id").and_then(|v| v.as_str())?.to_string();
-            let text = seg
-                .get("text")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            // Prefer an explicit timestamp; fall back to display_time; else empty.
-            let timestamp = seg
-                .get("timestamp")
-                .and_then(|v| v.as_str())
-                .or_else(|| seg.get("display_time").and_then(|v| v.as_str()))
-                .unwrap_or("")
-                .to_string();
-            let audio_start_time = seg.get("audio_start_time").and_then(|v| v.as_f64());
-            let audio_end_time = seg.get("audio_end_time").and_then(|v| v.as_f64());
-            let duration = seg.get("duration").and_then(|v| v.as_f64());
-            let speaker = seg
-                .get("speaker")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string());
-            let sequence_id = seg.get("sequence_id").and_then(|v| v.as_u64()).unwrap_or(0);
-            Some((
-                sequence_id,
-                crate::api::api::TranscriptSegment {
-                    id,
-                    text,
-                    timestamp,
-                    audio_start_time,
-                    audio_end_time,
-                    duration,
-                    speaker,
-                },
-            ))
-        })
-        .collect();
+    let mut out: Vec<(u64, crate::api::api::TranscriptSegment)> =
+        segments.iter().filter_map(segment_from_value).collect();
     out.sort_by_key(|(seq, _)| *seq);
     out.into_iter().map(|(_, s)| s).collect()
+}
+
+/// Read the append-only `transcripts.jsonl` crash-recovery log: one segment JSON object
+/// per line, folded by `sequence_id` (last append wins, so an updated segment supersedes
+/// an earlier one), sorted by `sequence_id`. This is the durable incremental source
+/// written per segment; the pretty `transcripts.json` is written only once at finalize.
+/// A torn/partial last line (crash mid-write) is skipped, not fatal.
+pub fn read_transcripts_jsonl(folder: &Path) -> Vec<crate::api::api::TranscriptSegment> {
+    let content = match std::fs::read_to_string(folder.join("transcripts.jsonl")) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let mut by_seq: std::collections::BTreeMap<u64, crate::api::api::TranscriptSegment> =
+        std::collections::BTreeMap::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+            if let Some((seq, seg)) = segment_from_value(&value) {
+                by_seq.insert(seq, seg); // last write for a sequence_id wins
+            }
+        }
+    }
+    by_seq.into_values().collect()
+}
+
+/// Preferred recovery read: the durable append-only `transcripts.jsonl` when present and
+/// non-empty (recordings written with the jsonl saver), else the finalized
+/// `transcripts.json` (legacy folders, or a folder finalized before this change).
+pub fn read_transcripts_for_recovery(folder: &Path) -> Vec<crate::api::api::TranscriptSegment> {
+    if folder.join("transcripts.jsonl").exists() {
+        let segs = read_transcripts_jsonl(folder);
+        if !segs.is_empty() {
+            return segs;
+        }
+    }
+    read_transcripts_json(folder)
 }
 
 /// True if the folder has any `.checkpoints/*.mp4` audio chunk.
@@ -170,7 +207,7 @@ fn scan_roots(roots: &[PathBuf], known: &HashSet<String>) -> Vec<InterruptedReco
             if status != "recording" {
                 continue; // completed / error / recovered — not interrupted
             }
-            let segments = read_transcripts_json(&folder);
+            let segments = read_transcripts_for_recovery(&folder);
             let has_checkpoints = folder_has_checkpoints(&folder);
             if segments.is_empty() && !has_checkpoints {
                 continue; // nothing to recover
@@ -265,7 +302,7 @@ pub async fn import_interrupted_recording<R: Runtime>(
         return Err("This recording has already been imported".to_string());
     }
 
-    let segments = read_transcripts_json(&folder);
+    let segments = read_transcripts_for_recovery(&folder);
     let has_checkpoints = folder_has_checkpoints(&folder);
     if segments.is_empty() && !has_checkpoints {
         return Err("Nothing to recover in this folder".to_string());
@@ -387,6 +424,59 @@ mod tests {
         assert_eq!(segs[1].speaker.as_deref(), Some("mic"), "speaker preserved");
         // display_time used as the timestamp fallback for the recording_saver shape.
         assert_eq!(segs[0].timestamp, "[00:00]");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn jsonl_folds_by_sequence_id_last_wins_and_skips_torn_line() {
+        let dir = std::env::temp_dir().join("murmur_recovery_jsonl_fold_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let folder = dir.join("rec");
+        std::fs::create_dir_all(&folder).unwrap();
+        // Out-of-order appends, seq 2 updated (last wins), and a torn final line (crash).
+        let jsonl = concat!(
+            "{\"id\":\"b\",\"text\":\"second\",\"sequence_id\":2,\"speaker\":\"mic\"}\n",
+            "{\"id\":\"a\",\"text\":\"first\",\"sequence_id\":1,\"speaker\":\"sys\"}\n",
+            "{\"id\":\"b\",\"text\":\"second-edited\",\"sequence_id\":2,\"speaker\":\"mic\"}\n",
+            "{\"id\":\"c\",\"text\":\"tor",
+        );
+        std::fs::write(folder.join("transcripts.jsonl"), jsonl).unwrap();
+
+        let segs = read_transcripts_jsonl(&folder);
+        assert_eq!(segs.len(), 2, "seq 2 folded to one; torn line skipped");
+        assert_eq!(segs[0].id, "a", "sorted by sequence_id");
+        assert_eq!(segs[1].id, "b");
+        assert_eq!(segs[1].text, "second-edited", "last write for a sequence_id wins");
+        assert_eq!(segs[0].speaker.as_deref(), Some("sys"), "speaker preserved");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recovery_prefers_jsonl_then_falls_back_to_json() {
+        let dir = std::env::temp_dir().join("murmur_recovery_prefers_jsonl_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let folder = dir.join("rec");
+        std::fs::create_dir_all(&folder).unwrap();
+        // json holds a STALE segment; jsonl is the newer durable log.
+        std::fs::write(
+            folder.join("transcripts.json"),
+            r#"{"segments":[{"id":"old","text":"stale","sequence_id":1}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            folder.join("transcripts.jsonl"),
+            "{\"id\":\"new\",\"text\":\"fresh\",\"sequence_id\":1}\n",
+        )
+        .unwrap();
+
+        let segs = read_transcripts_for_recovery(&folder);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].id, "new", "jsonl (durable) preferred over stale json");
+
+        // Without a jsonl, recovery falls back to the finalized json.
+        std::fs::remove_file(folder.join("transcripts.jsonl")).unwrap();
+        let segs = read_transcripts_for_recovery(&folder);
+        assert_eq!(segs[0].id, "old", "falls back to json when no jsonl");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

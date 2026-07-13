@@ -113,12 +113,31 @@ impl RecordingSaver {
             error!("Failed to lock transcript segments for adding segment {}", segment.id);
         }
 
-        // NEW: Save incrementally to disk
+        // Durably append this segment to transcripts.jsonl (O(1) + fsync per segment).
+        // This is the crash-recovery source; the pretty transcripts.json is written once
+        // at finalize. Replaces the old O(n^2) full transcripts.json rewrite per segment.
         if let Some(folder) = &self.meeting_folder {
-            if let Err(e) = self.write_transcripts_json(folder) {
-                warn!("Failed to write incremental transcript update: {}", e);
+            if let Err(e) = self.append_transcript_jsonl(folder, &segment) {
+                warn!("Failed to append incremental transcript jsonl: {}", e);
             }
         }
+    }
+
+    /// Append one transcript segment as a JSON line to `transcripts.jsonl`, fsync'd for
+    /// durability. O(1) per segment; recovery folds the log by `sequence_id` (see
+    /// `recovery_scan::read_transcripts_jsonl`).
+    fn append_transcript_jsonl(&self, folder: &PathBuf, segment: &TranscriptSegment) -> Result<()> {
+        use std::io::Write;
+        let path = folder.join("transcripts.jsonl");
+        let mut line = serde_json::to_string(segment)?;
+        line.push('\n');
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        file.write_all(line.as_bytes())?;
+        file.sync_all()?;
+        Ok(())
     }
 
     /// Legacy method for backward compatibility - converts text to basic segment
@@ -333,12 +352,23 @@ impl RecordingSaver {
                 anyhow::anyhow!("JSON serialization failed: {}", e)
             })?;
 
-        // Write to temp file with error handling
-        std::fs::write(&temp_path, &json_string)
-            .map_err(|e| {
-                error!("Failed to write transcript temp file to {}: {}", temp_path.display(), e);
+        // Write to temp file and fsync before the atomic rename, so a crash right after
+        // the rename can't leave transcripts.json pointing at unflushed bytes.
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&temp_path).map_err(|e| {
+                error!("Failed to create transcript temp file {}: {}", temp_path.display(), e);
+                anyhow::anyhow!("Failed to create temp file: {}", e)
+            })?;
+            f.write_all(json_string.as_bytes()).map_err(|e| {
+                error!("Failed to write transcript temp file {}: {}", temp_path.display(), e);
                 anyhow::anyhow!("Failed to write temp file: {}", e)
             })?;
+            f.sync_all().map_err(|e| {
+                error!("Failed to fsync transcript temp file {}: {}", temp_path.display(), e);
+                anyhow::anyhow!("Failed to fsync temp file: {}", e)
+            })?;
+        }
 
         // Verify temp file was written correctly
         if !temp_path.exists() {

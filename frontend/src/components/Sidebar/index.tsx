@@ -57,7 +57,8 @@ const Sidebar: React.FC = () => {
     searchResults,
     isSearching,
     meetings,
-    setMeetings
+    setMeetings,
+    refetchMeetings
   } = useSidebar();
 
   // Get recording state from RecordingStateContext (single source of truth)
@@ -322,30 +323,47 @@ const Sidebar: React.FC = () => {
 
 
   const handleDelete = async (itemId: string) => {
-    console.log('Deleting item:', itemId);
-    const payload = {
-      meetingId: itemId
-    };
+    const deleted = meetings.find((m: CurrentMeeting) => m.id === itemId);
 
     try {
       const { invoke } = await import('@tauri-apps/api/core');
+      // Soft-delete: the meeting moves to the trash (its transcripts/summary stay
+      // intact) and is auto-purged after 30 days. Fully reversible via Undo.
       await invoke('api_delete_meeting', {
         meetingId: itemId,
       });
-      console.log('Meeting deleted successfully');
-      const updatedMeetings = meetings.filter((m: CurrentMeeting) => m.id !== itemId);
-      setMeetings(updatedMeetings);
 
-      // Show success toast
-      toast.success("Meeting deleted successfully", {
-        description: "All associated data has been removed"
-      });
+      // Optimistically remove it from the sidebar list. Use a functional
+      // updater so overlapping in-flight deletes each build on the latest list
+      // instead of a stale render-time snapshot (which could resurrect a peer).
+      setMeetings((prev) => prev.filter((m: CurrentMeeting) => m.id !== itemId));
 
-      // If deleting the active meeting, navigate to home
+      // If deleting the active meeting, navigate to home.
       if (currentMeeting?.id === itemId) {
         setCurrentMeeting({ id: 'intro-call', title: '+ New Call' });
         router.push('/');
       }
+
+      // Offer an Undo that restores the meeting from the trash.
+      toast.success("Meeting moved to trash", {
+        description: `"${deleted?.title ?? 'Meeting'}" — kept for 30 days, then removed`,
+        action: {
+          label: "Undo",
+          onClick: async () => {
+            try {
+              const { invoke } = await import('@tauri-apps/api/core');
+              await invoke('api_restore_meeting', { meetingId: itemId });
+              await refetchMeetings();
+              toast.success("Meeting restored");
+            } catch (error) {
+              console.error('Failed to restore meeting:', error);
+              toast.error("Failed to restore meeting", {
+                description: error instanceof Error ? error.message : String(error)
+              });
+            }
+          },
+        },
+      });
     } catch (error) {
       console.error('Failed to delete meeting:', error);
       toast.error("Failed to delete meeting", {
@@ -389,11 +407,13 @@ const Sidebar: React.FC = () => {
         title: newTitle,
       });
 
-      // Update local state
-      const updatedMeetings = meetings.map((m: CurrentMeeting) =>
-        m.id === meetingId ? { ...m, title: newTitle } : m
+      // Update local state via a functional updater (avoids clobbering a
+      // concurrent delete/edit with a stale render-time snapshot).
+      setMeetings((prev) =>
+        prev.map((m: CurrentMeeting) =>
+          m.id === meetingId ? { ...m, title: newTitle } : m
+        )
       );
-      setMeetings(updatedMeetings);
 
       // Update current meeting if it's the one being edited
       if (currentMeeting?.id === meetingId) {
@@ -840,7 +860,7 @@ const Sidebar: React.FC = () => {
       {/* Confirmation Modal for Delete */}
       <ConfirmationModal
         isOpen={deleteModalState.isOpen}
-        text="Are you sure you want to delete this meeting? This action cannot be undone."
+        text="Move this meeting to the trash? You can undo right after, and trashed meetings are automatically removed after 30 days."
         onConfirm={handleDeleteConfirm}
         onCancel={() => setDeleteModalState({ isOpen: false, itemId: null })}
       />

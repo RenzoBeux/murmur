@@ -168,6 +168,11 @@ pub async fn import_and_initialize_database(
         error!("Failed to reset orphaned summary processes: {}", e);
     }
 
+    // Empty the trash: purge meetings soft-deleted more than 30 days ago (best-effort).
+    if let Err(e) = super::repositories::meeting::MeetingsRepository::purge_trash_older_than(db_manager.pool(), 30).await {
+        error!("Failed to purge old trashed meetings: {}", e);
+    }
+
     // Update app state with the new manager
     app.manage(AppState { db_manager });
 
@@ -198,6 +203,11 @@ pub async fn initialize_fresh_database(app: AppHandle) -> Result<(), String> {
     // Reconcile summary processes stranded in a non-terminal state by a prior quit.
     if let Err(e) = super::repositories::summary::SummaryProcessesRepository::reset_orphaned_processes(db_manager.pool()).await {
         error!("Failed to reset orphaned summary processes: {}", e);
+    }
+
+    // Empty the trash: purge meetings soft-deleted more than 30 days ago (best-effort).
+    if let Err(e) = super::repositories::meeting::MeetingsRepository::purge_trash_older_than(db_manager.pool(), 30).await {
+        error!("Failed to purge old trashed meetings: {}", e);
     }
 
     // Update app state with the new manager

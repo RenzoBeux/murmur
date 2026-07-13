@@ -60,6 +60,7 @@ mod tests {
         for (table, column) in [
             ("meetings", "folder_path"),
             ("meetings", "attendees"),
+            ("meetings", "deleted_at"),
             ("transcripts", "speaker"),
             ("transcripts", "audio_start_time"),
             ("summary_processes", "result_backup"),

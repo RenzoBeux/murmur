@@ -36,7 +36,11 @@ interface SidebarContextType {
   isCollapsed: boolean;
   toggleCollapse: () => void;
   meetings: CurrentMeeting[];
-  setMeetings: (meetings: CurrentMeeting[]) => void;
+  // Raw useState dispatch: accepts a value OR a functional updater. The updater
+  // form is required for correctness when mutating from async callbacks (e.g.
+  // overlapping deletes) so each update builds on the latest state, not a stale
+  // render-time snapshot.
+  setMeetings: React.Dispatch<React.SetStateAction<CurrentMeeting[]>>;
   isMeetingActive: boolean;
   setIsMeetingActive: (active: boolean) => void;
   handleRecordingToggle: () => void;

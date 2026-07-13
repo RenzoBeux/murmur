@@ -420,7 +420,7 @@ impl TranscriptsRepository {
             "SELECT m.id, m.title, t.transcript, t.timestamp
              FROM meetings m
              JOIN transcripts t ON m.id = t.meeting_id
-             WHERE LOWER(t.transcript) LIKE ?
+             WHERE m.deleted_at IS NULL AND LOWER(t.transcript) LIKE ?
              LIMIT 100",
         )
         .bind(&search_query)
@@ -594,7 +594,7 @@ mod tests {
             .await
             .unwrap();
         for ddl in [
-            "CREATE TABLE meetings (id TEXT PRIMARY KEY, title TEXT)",
+            "CREATE TABLE meetings (id TEXT PRIMARY KEY, title TEXT, deleted_at TEXT)",
             "CREATE TABLE transcripts (id TEXT, meeting_id TEXT, transcript TEXT, timestamp TEXT)",
         ] {
             sqlx::query(ddl).execute(&pool).await.unwrap();
@@ -631,5 +631,47 @@ mod tests {
             .expect("search must not error");
         assert_eq!(results.len(), 1);
         assert!(results[0].match_context.contains("español"));
+    }
+
+    /// Soft-deleted (trashed) meetings must not leak into transcript search,
+    /// and restoring one brings its matches back.
+    #[tokio::test]
+    async fn search_excludes_trashed_meetings() {
+        use crate::database::repositories::meeting::MeetingsRepository;
+
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m1").await;
+        sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp) VALUES ('t1','m1','the quarterly roadmap','[00:00]')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            TranscriptsRepository::search_transcripts(&pool, "roadmap")
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "live meeting is searchable"
+        );
+
+        assert!(MeetingsRepository::delete_meeting(&pool, "m1").await.unwrap());
+        assert!(
+            TranscriptsRepository::search_transcripts(&pool, "roadmap")
+                .await
+                .unwrap()
+                .is_empty(),
+            "trashed meetings must not appear in search"
+        );
+
+        assert!(MeetingsRepository::restore_meeting(&pool, "m1").await.unwrap());
+        assert_eq!(
+            TranscriptsRepository::search_transcripts(&pool, "roadmap")
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "restored meeting is searchable again"
+        );
     }
 }

@@ -637,6 +637,7 @@ pub fn run() {
             api::api_delete_transcript_api_key,
             api::api_test_pyannote_key,
             api::api_delete_meeting,
+            api::api_restore_meeting,
             api::api_get_meeting,
             api::api_get_meeting_metadata,
             api::api_get_meeting_transcripts,

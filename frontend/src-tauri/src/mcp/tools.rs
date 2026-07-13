@@ -176,19 +176,39 @@ pub fn snippet(text: &str, query: &str) -> String {
 // Tools
 // ---------------------------------------------------------------------------
 
-pub async fn list_meetings(pool: &SqlitePool, limit: i64) -> Result<String> {
-    let rows = sqlx::query(
-        r#"
-        SELECT m.id, m.title, m.created_at, sp.status AS summary_status
-        FROM meetings m
-        LEFT JOIN summary_processes sp ON sp.meeting_id = m.id
-        ORDER BY m.created_at DESC
-        LIMIT ?
-        "#,
+/// Whether the opened DB carries soft-delete (`meetings.deleted_at`). A database
+/// opened read-only via `--db` may predate the soft-delete migration, so we
+/// probe the schema and skip the trashed-meeting filter when the column is
+/// absent rather than erroring on "no such column".
+async fn meetings_has_soft_delete(pool: &SqlitePool) -> bool {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pragma_table_info('meetings') WHERE name = 'deleted_at'",
     )
-    .bind(limit.clamp(1, 500))
-    .fetch_all(pool)
-    .await?;
+    .fetch_one(pool)
+    .await
+    .map(|count| count > 0)
+    .unwrap_or(false)
+}
+
+pub async fn list_meetings(pool: &SqlitePool, limit: i64) -> Result<String> {
+    // Hide trashed meetings when the schema supports it (see meetings_has_soft_delete).
+    let trash_filter = if meetings_has_soft_delete(pool).await {
+        "WHERE m.deleted_at IS NULL"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT m.id, m.title, m.created_at, sp.status AS summary_status \
+         FROM meetings m \
+         LEFT JOIN summary_processes sp ON sp.meeting_id = m.id \
+         {trash_filter} \
+         ORDER BY m.created_at DESC \
+         LIMIT ?"
+    );
+    let rows = sqlx::query(&sql)
+        .bind(limit.clamp(1, 500))
+        .fetch_all(pool)
+        .await?;
 
     if rows.is_empty() {
         return Ok("No meetings found in the Murmur database yet.".to_string());
@@ -337,23 +357,30 @@ pub async fn search_transcripts(pool: &SqlitePool, query: &str, limit: i64) -> R
     let limit = limit.clamp(1, 100);
     let like = format!("%{}%", query.to_lowercase());
 
+    // Exclude trashed meetings when the schema supports it. `sd_and` is a
+    // compile-time literal (no user input), so interpolating it is injection-safe.
+    let sd_and = if meetings_has_soft_delete(pool).await {
+        "m.deleted_at IS NULL AND "
+    } else {
+        ""
+    };
+
     let mut results: Vec<(String, String, String)> = Vec::new(); // (id, title, context)
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    let seg_rows = sqlx::query(
-        r#"
-        SELECT m.id, m.title, t.transcript
-        FROM meetings m
-        JOIN transcripts t ON t.meeting_id = m.id
-        WHERE LOWER(t.transcript) LIKE ?
-        ORDER BY m.created_at DESC
-        LIMIT ?
-        "#,
-    )
-    .bind(&like)
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
+    let seg_sql = format!(
+        "SELECT m.id, m.title, t.transcript \
+         FROM meetings m \
+         JOIN transcripts t ON t.meeting_id = m.id \
+         WHERE {sd_and}LOWER(t.transcript) LIKE ? \
+         ORDER BY m.created_at DESC \
+         LIMIT ?"
+    );
+    let seg_rows = sqlx::query(&seg_sql)
+        .bind(&like)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
     for row in &seg_rows {
         let id: String = row.try_get("id")?;
         let title: String = row.try_get("title")?;
@@ -363,20 +390,19 @@ pub async fn search_transcripts(pool: &SqlitePool, query: &str, limit: i64) -> R
     }
 
     if (results.len() as i64) < limit {
-        let chunk_rows = sqlx::query(
-            r#"
-            SELECT m.id, m.title, tc.transcript_text
-            FROM meetings m
-            JOIN transcript_chunks tc ON tc.meeting_id = m.id
-            WHERE LOWER(tc.transcript_text) LIKE ?
-            ORDER BY m.created_at DESC
-            LIMIT ?
-            "#,
-        )
-        .bind(&like)
-        .bind(limit)
-        .fetch_all(pool)
-        .await?;
+        let chunk_sql = format!(
+            "SELECT m.id, m.title, tc.transcript_text \
+             FROM meetings m \
+             JOIN transcript_chunks tc ON tc.meeting_id = m.id \
+             WHERE {sd_and}LOWER(tc.transcript_text) LIKE ? \
+             ORDER BY m.created_at DESC \
+             LIMIT ?"
+        );
+        let chunk_rows = sqlx::query(&chunk_sql)
+            .bind(&like)
+            .bind(limit)
+            .fetch_all(pool)
+            .await?;
         for row in &chunk_rows {
             let id: String = row.try_get("id")?;
             if seen.contains(&id) {
@@ -481,7 +507,7 @@ mod tests {
             .await
             .unwrap();
         for ddl in [
-            "CREATE TABLE meetings (id TEXT PRIMARY KEY, title TEXT, created_at TEXT, updated_at TEXT)",
+            "CREATE TABLE meetings (id TEXT PRIMARY KEY, title TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT)",
             "CREATE TABLE transcripts (id TEXT, meeting_id TEXT, transcript TEXT, timestamp TEXT, \
              audio_start_time REAL, audio_end_time REAL, speaker TEXT)",
             "CREATE TABLE transcript_chunks (meeting_id TEXT, transcript_text TEXT)",
@@ -495,7 +521,7 @@ mod tests {
     #[tokio::test]
     async fn list_and_transcript_and_search_roundtrip() {
         let pool = test_pool().await;
-        sqlx::query("INSERT INTO meetings VALUES ('m1', 'Standup', '2026-07-01', '2026-07-01')")
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES ('m1', 'Standup', '2026-07-01', '2026-07-01')")
             .execute(&pool)
             .await
             .unwrap();
@@ -527,5 +553,56 @@ mod tests {
 
         let missing = get_transcript(&pool, "nope").await.unwrap();
         assert!(missing.contains("No meeting found"));
+    }
+
+    #[tokio::test]
+    async fn list_and_search_hide_trashed_meetings() {
+        let pool = test_pool().await;
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES ('m1', 'Kept', '2026-07-01', '2026-07-01')")
+            .execute(&pool).await.unwrap();
+        // m2 is trashed (deleted_at set).
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, deleted_at) VALUES ('m2', 'Trashed', '2026-07-02', '2026-07-02', '2026-07-03 00:00:00')")
+            .execute(&pool).await.unwrap();
+        for (tid, mid) in [("t1", "m1"), ("t2", "m2")] {
+            sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, speaker) VALUES (?, ?, 'shared keyword alpha', '[00:00]', 0.0, 1.0, NULL)")
+                .bind(tid).bind(mid).execute(&pool).await.unwrap();
+        }
+
+        let listing = list_meetings(&pool, 10).await.unwrap();
+        assert!(listing.contains("Kept"));
+        assert!(!listing.contains("Trashed"), "trashed meeting hidden from list_meetings");
+
+        let found = search_transcripts(&pool, "alpha", 10).await.unwrap();
+        assert!(found.contains("`m1`"));
+        assert!(!found.contains("`m2`"), "trashed meeting hidden from MCP search");
+    }
+
+    /// A DB opened via `--db` that predates the soft-delete migration (no
+    /// `meetings.deleted_at`) must still work — the filter is silently skipped.
+    #[tokio::test]
+    async fn list_and_search_tolerate_missing_soft_delete_column() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for ddl in [
+            "CREATE TABLE meetings (id TEXT PRIMARY KEY, title TEXT, created_at TEXT, updated_at TEXT)",
+            "CREATE TABLE transcripts (id TEXT, meeting_id TEXT, transcript TEXT, timestamp TEXT, \
+             audio_start_time REAL, audio_end_time REAL, speaker TEXT)",
+            "CREATE TABLE transcript_chunks (meeting_id TEXT, transcript_text TEXT)",
+            "CREATE TABLE summary_processes (meeting_id TEXT, status TEXT, result TEXT, error TEXT)",
+        ] {
+            sqlx::query(ddl).execute(&pool).await.unwrap();
+        }
+        assert!(!meetings_has_soft_delete(&pool).await);
+
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES ('m1','Legacy','2026-07-01','2026-07-01')")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, speaker) VALUES ('t1','m1','legacy keyword beta','[00:00]',0.0,1.0,NULL)")
+            .execute(&pool).await.unwrap();
+
+        assert!(list_meetings(&pool, 10).await.unwrap().contains("Legacy"));
+        assert!(search_transcripts(&pool, "beta", 10).await.unwrap().contains("`m1`"));
     }
 }

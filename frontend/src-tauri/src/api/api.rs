@@ -652,6 +652,45 @@ pub async fn api_delete_meeting<R: Runtime>(
     }
 }
 
+/// Undo a soft-delete: bring a trashed meeting (and its intact transcripts,
+/// summary, and chunks) back into the live listing. Backs the sidebar "Undo" toast.
+#[tauri::command]
+pub async fn api_restore_meeting<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    auth_token: Option<String>,
+) -> Result<serde_json::Value, String> {
+    log_info!(
+        "api_restore_meeting called for meeting_id(native): {}, auth_token: {}",
+        meeting_id,
+        auth_token.is_some()
+    );
+
+    let pool = state.db_manager.pool();
+
+    match MeetingsRepository::restore_meeting(pool, &meeting_id).await {
+        Ok(true) => {
+            log_info!("Successfully restored meeting {}", meeting_id);
+            Ok(serde_json::json!({
+                "status": "success",
+                "message": "Meeting restored successfully"
+            }))
+        }
+        Ok(false) => {
+            log_warn!("Meeting not found in trash or already restored: {}", meeting_id);
+            Err(format!(
+                "Meeting not found in trash or could not be restored: {}",
+                meeting_id
+            ))
+        }
+        Err(e) => {
+            log_error!("Error restoring meeting {}: {}", meeting_id, e);
+            Err(format!("Failed to restore meeting: {}", e))
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn api_get_meeting<R: Runtime>(
     _app: AppHandle<R>,

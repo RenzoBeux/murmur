@@ -24,6 +24,8 @@ Delivered as **stacked branches / PRs** off `main` (each PR bases on the previou
 | 6 — product features | ✅ shipped (5 of 6 + backup half; `title-prompt` + DB-`restore` deferred) | `feat/remediation-wave-6` | #10 → wave-5a |
 | 3c — audio-quality DSP | ✅ shipped (`3C.2` tail-flush; `3C.1`/`3C.3` deferred — mic A/B) | `feat/remediation-wave-3c` | #11 → wave-6 |
 
+**Post-plan follow-up shipped (2026-07-13):** Wave **2.6 `soft-delete-undo`** (was deferred backlog) — reversible delete: trash + **Undo** toast + 30-day retention purge. Branch `feat/remediation-soft-delete` stacked on wave-3c (PR #12 → wave-3c). Migration `20260713120000_add_soft_delete.sql` adds `meetings.deleted_at` + index; `delete_meeting` now soft-stamps `deleted_at` (children untouched), added `restore_meeting`/`purge_meeting`/`purge_trash_older_than(30)` (swept at all 3 DB-init entry points); `get_meetings` + app `search_transcripts` + MCP `list_meetings`/`search_transcripts` filter trash (MCP gracefully via a `pragma_table_info` column-probe so pre-migration `--db` DBs still work); `bulk-export` inherits the filter via `get_meetings`. Frontend `handleDelete` → "moved to trash" + Undo (restore + refetch). **275 lib tests green (+7)**, tsc-neutral. Also fixed a **pre-existing** Wave 6.2 tsc error surfaced while verifying (index.tsx's local `SidebarItem` was missing `createdAt`, which `groupMeetingsByDate` requires — separate commit). *Note: prior waves' "tsc 0 errors" claims were masked by `| tail` swallowing tsc's exit — this branch is genuinely tsc-clean.*
+
 **Repo:** GitHub `RenzoBeux/murmur` (NOT the `gh` default `Zackriya-Solutions/meetily` — always pass `--repo RenzoBeux/murmur`). The base commits `99924d5`/`e1ad60c` and all wave branches were pushed there; `main` on origin is behind at `4aca29e`.
 
 **How to continue in a fresh session:** **all in-scope waves are shipped.** The tip branch `feat/remediation-wave-3c` (PR #11 → wave-6) contains everything; the PR chain is #6→#7→#8→#9→#10→#11, each based on the previous. What remains are the explicitly-deferred items below — each needs either a **manual app run** (audio/DB/recovery/LLM flows) or is an **XL/structural backlog** task. Verify any follow-up with `cargo check`/`cargo test`/`tsc`.
@@ -39,7 +41,7 @@ Delivered as **stacked branches / PRs** off `main` (each PR bases on the previou
 
 **Known limitation (Wave 4):** pre-existing on-disk models aren't retroactively re-hashed for summary/diarization/whisper (Parakeet *does* re-verify); a verify-on-load follow-up would close it.
 
-**Deferred backlog (own passes — XL / schema migration / new dep):** `audio-ownership-thread` (then `auto-reconnect-backoff` + `windows-loopback-rebind`), `soft-delete-undo`, keychain (4.7/4.8), `meeting-tags`, FTS5.
+**Deferred backlog (own passes — XL / schema migration / new dep):** `audio-ownership-thread` (then `auto-reconnect-backoff` + `windows-loopback-rebind`), keychain (4.7/4.8), `meeting-tags`, FTS5. *(`soft-delete-undo` shipped 2026-07-13 — see the follow-up note above.)*
 
 **Documented follow-ups inside shipped waves:** Wave 1 — surface partial-coverage / chat-windowed truncation as **UI toasts** (needs a `SummaryOutcome` return-shape refactor; currently only logs). Wave 2 — richer `TranscriptRecovery` dialog integration (deduped startup toast is what shipped).
 

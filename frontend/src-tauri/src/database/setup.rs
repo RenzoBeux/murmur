@@ -63,6 +63,12 @@ pub async fn initialize_database_on_startup(app: &AppHandle) -> Result<(), Strin
             log::warn!("Failed to reset orphaned summary processes: {}", e);
         }
 
+        // Empty the trash: permanently purge meetings soft-deleted more than 30 days
+        // ago (cascading to their children). Best-effort — never blocks startup.
+        if let Err(e) = crate::database::repositories::meeting::MeetingsRepository::purge_trash_older_than(db_manager.pool(), 30).await {
+            log::warn!("Failed to purge old trashed meetings: {}", e);
+        }
+
         app.manage(AppState { db_manager });
         info!("Database initialized successfully");
     }

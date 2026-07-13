@@ -7,16 +7,22 @@ use tracing::{error, info};
 pub struct MeetingsRepository;
 
 impl MeetingsRepository {
+    /// Live (non-trashed) meetings, newest first. Soft-deleted rows
+    /// (`deleted_at IS NOT NULL`) are hidden — they live in the trash until the
+    /// retention purge removes them or the user restores them.
     pub async fn get_meetings(pool: &SqlitePool) -> Result<Vec<MeetingModel>, sqlx::Error> {
-        let meetings =
-            sqlx::query_as::<_, MeetingModel>("SELECT * FROM meetings ORDER BY created_at DESC")
-                .fetch_all(pool)
-                .await?;
+        let meetings = sqlx::query_as::<_, MeetingModel>(
+            "SELECT * FROM meetings WHERE deleted_at IS NULL ORDER BY created_at DESC",
+        )
+        .fetch_all(pool)
+        .await?;
         Ok(meetings)
     }
 
     /// All non-empty `folder_path`s, used by the filesystem recovery scan to dedup
     /// interrupted-recording folders against meetings already saved to SQLite.
+    /// Intentionally includes trashed (soft-deleted) meetings: their folders are
+    /// still "known" to the DB, so recovery must not resurrect them as new imports.
     pub async fn list_folder_paths(pool: &SqlitePool) -> Result<Vec<String>, SqlxError> {
         let rows: Vec<(String,)> = sqlx::query_as(
             "SELECT folder_path FROM meetings WHERE folder_path IS NOT NULL AND folder_path != ''",
@@ -26,7 +32,66 @@ impl MeetingsRepository {
         Ok(rows.into_iter().map(|(p,)| p).collect())
     }
 
+    /// Soft-delete: move a meeting to the trash by stamping `deleted_at`.
+    ///
+    /// The meeting vanishes from every listing/search (they filter
+    /// `deleted_at IS NULL`) but its transcripts, summary, and chunks are left
+    /// untouched, so [`restore_meeting`](Self::restore_meeting) fully reverses it.
+    /// Returns `false` if the id doesn't exist or is already trashed (the
+    /// `deleted_at IS NULL` guard makes a repeat delete a no-op). Permanent
+    /// removal happens later via [`purge_meeting`](Self::purge_meeting) or the
+    /// retention sweep [`purge_trash_older_than`](Self::purge_trash_older_than).
     pub async fn delete_meeting(pool: &SqlitePool, meeting_id: &str) -> Result<bool, SqlxError> {
+        if meeting_id.trim().is_empty() {
+            return Err(SqlxError::Protocol(
+                "meeting_id cannot be empty".to_string(),
+            ));
+        }
+
+        let result = sqlx::query(
+            "UPDATE meetings SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(Utc::now().naive_utc())
+        .bind(meeting_id)
+        .execute(pool)
+        .await?;
+
+        let moved = result.rows_affected() > 0;
+        if moved {
+            info!("Soft-deleted meeting {} (moved to trash)", meeting_id);
+        }
+        Ok(moved)
+    }
+
+    /// Reverse a soft-delete: clear `deleted_at` so the meeting reappears in
+    /// listings/search with all of its (never-touched) child rows intact.
+    /// Returns `false` if the id doesn't exist or isn't currently trashed.
+    pub async fn restore_meeting(pool: &SqlitePool, meeting_id: &str) -> Result<bool, SqlxError> {
+        if meeting_id.trim().is_empty() {
+            return Err(SqlxError::Protocol(
+                "meeting_id cannot be empty".to_string(),
+            ));
+        }
+
+        let result = sqlx::query(
+            "UPDATE meetings SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL",
+        )
+        .bind(meeting_id)
+        .execute(pool)
+        .await?;
+
+        let restored = result.rows_affected() > 0;
+        if restored {
+            info!("Restored meeting {} from trash", meeting_id);
+        }
+        Ok(restored)
+    }
+
+    /// Permanently delete a single meeting and all of its associated data
+    /// (transcripts, summary processes, transcript chunks) in one transaction.
+    /// This is the irreversible hard delete — used to empty the trash. Returns
+    /// `false` if the meeting doesn't exist.
+    pub async fn purge_meeting(pool: &SqlitePool, meeting_id: &str) -> Result<bool, SqlxError> {
         if meeting_id.trim().is_empty() {
             return Err(SqlxError::Protocol(
                 "meeting_id cannot be empty".to_string(),
@@ -41,7 +106,7 @@ impl MeetingsRepository {
                 if success {
                     transaction.commit().await?;
                     info!(
-                        "Successfully deleted meeting {} and all associated data",
+                        "Permanently purged meeting {} and all associated data",
                         meeting_id
                     );
                     Ok(true)
@@ -52,10 +117,54 @@ impl MeetingsRepository {
             }
             Err(e) => {
                 let _ = transaction.rollback().await;
-                error!("Failed to delete meeting {}: {}", meeting_id, e);
+                error!("Failed to purge meeting {}: {}", meeting_id, e);
                 Err(e)
             }
         }
+    }
+
+    /// Retention sweep: permanently purge every trashed meeting whose
+    /// `deleted_at` is older than `days` days, cascading to its children. Runs
+    /// best-effort at startup. All purges share one transaction so a mid-sweep
+    /// failure leaves the trash exactly as it was. Returns the number purged.
+    pub async fn purge_trash_older_than(pool: &SqlitePool, days: i64) -> Result<u64, SqlxError> {
+        let cutoff = (Utc::now() - chrono::Duration::days(days)).naive_utc();
+
+        let stale: Vec<(String,)> = sqlx::query_as(
+            "SELECT id FROM meetings WHERE deleted_at IS NOT NULL AND deleted_at < ?",
+        )
+        .bind(cutoff)
+        .fetch_all(pool)
+        .await?;
+
+        if stale.is_empty() {
+            return Ok(0);
+        }
+
+        let mut conn = pool.acquire().await?;
+        let mut transaction = conn.begin().await?;
+
+        let mut purged: u64 = 0;
+        for (id,) in &stale {
+            match delete_meeting_with_transaction(&mut transaction, id).await {
+                Ok(true) => purged += 1,
+                Ok(false) => {}
+                Err(e) => {
+                    let _ = transaction.rollback().await;
+                    error!("Failed to purge trashed meeting {}: {}", id, e);
+                    return Err(e);
+                }
+            }
+        }
+
+        transaction.commit().await?;
+        if purged > 0 {
+            info!(
+                "Purged {} trashed meeting(s) past the {}-day retention window",
+                purged, days
+            );
+        }
+        Ok(purged)
     }
 
     pub async fn get_meeting(
@@ -346,7 +455,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_meeting_cascades_to_children() {
+    async fn delete_meeting_is_soft_and_keeps_children() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m1", "Meeting").await;
+        sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp) VALUES ('t1','m1','hi','[00:00]')")
+            .execute(&pool).await.unwrap();
+
+        assert!(MeetingsRepository::delete_meeting(&pool, "m1").await.unwrap());
+
+        // The meeting row still exists — just stamped as trashed.
+        let deleted_at: Option<String> =
+            sqlx::query_scalar("SELECT deleted_at FROM meetings WHERE id='m1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(deleted_at.is_some(), "delete stamps deleted_at");
+
+        // Its children are untouched, so the delete is reversible.
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transcripts WHERE meeting_id='m1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 1, "soft delete must not touch child rows");
+
+        // And it vanishes from the live listing.
+        let live = MeetingsRepository::get_meetings(&pool).await.unwrap();
+        assert!(
+            live.iter().all(|m| m.id != "m1"),
+            "trashed meeting is hidden from get_meetings"
+        );
+
+        // A second delete is a no-op (already trashed).
+        assert!(!MeetingsRepository::delete_meeting(&pool, "m1").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn restore_meeting_unhides_and_is_reversible() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m1", "Meeting").await;
+        assert!(MeetingsRepository::delete_meeting(&pool, "m1").await.unwrap());
+
+        assert!(MeetingsRepository::restore_meeting(&pool, "m1").await.unwrap());
+        let live = MeetingsRepository::get_meetings(&pool).await.unwrap();
+        assert!(
+            live.iter().any(|m| m.id == "m1"),
+            "restored meeting is visible again"
+        );
+        let deleted_at: Option<String> =
+            sqlx::query_scalar("SELECT deleted_at FROM meetings WHERE id='m1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(deleted_at.is_none(), "restore clears deleted_at");
+
+        // Restoring a live meeting or a missing id is a no-op.
+        assert!(!MeetingsRepository::restore_meeting(&pool, "m1").await.unwrap());
+        assert!(!MeetingsRepository::restore_meeting(&pool, "nope").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn delete_missing_meeting_returns_false() {
+        let pool = migrated_pool().await;
+        assert!(!MeetingsRepository::delete_meeting(&pool, "nope").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn purge_meeting_hard_deletes_children() {
         let pool = migrated_pool().await;
         insert_meeting(&pool, "m1", "Meeting").await;
         sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp) VALUES ('t1','m1','hi','[00:00]')")
@@ -356,7 +530,7 @@ mod tests {
         sqlx::query("INSERT INTO transcript_chunks (meeting_id, transcript_text, model, model_name, created_at) VALUES ('m1','txt','m','mn', datetime('now'))")
             .execute(&pool).await.unwrap();
 
-        assert!(MeetingsRepository::delete_meeting(&pool, "m1").await.unwrap());
+        assert!(MeetingsRepository::purge_meeting(&pool, "m1").await.unwrap());
 
         for q in [
             "SELECT COUNT(*) FROM meetings WHERE id='m1'",
@@ -365,14 +539,48 @@ mod tests {
             "SELECT COUNT(*) FROM transcript_chunks WHERE meeting_id='m1'",
         ] {
             let n: i64 = sqlx::query_scalar(q).fetch_one(&pool).await.unwrap();
-            assert_eq!(n, 0, "rows should be gone after cascade delete: {q}");
+            assert_eq!(n, 0, "purge hard-deletes everything: {q}");
         }
+        assert!(!MeetingsRepository::purge_meeting(&pool, "m1").await.unwrap());
     }
 
     #[tokio::test]
-    async fn delete_missing_meeting_returns_false() {
+    async fn purge_trash_older_than_removes_only_stale_trash() {
         let pool = migrated_pool().await;
-        assert!(!MeetingsRepository::delete_meeting(&pool, "nope").await.unwrap());
+        insert_meeting(&pool, "m_old", "Old").await;
+        insert_meeting(&pool, "m_recent", "Recent").await;
+        insert_meeting(&pool, "m_live", "Live").await;
+
+        // Trash two; backdate one's deletion to 40 days ago (past the 30-day window).
+        assert!(MeetingsRepository::delete_meeting(&pool, "m_old").await.unwrap());
+        assert!(MeetingsRepository::delete_meeting(&pool, "m_recent").await.unwrap());
+        sqlx::query("UPDATE meetings SET deleted_at = datetime('now','-40 days') WHERE id='m_old'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let purged = MeetingsRepository::purge_trash_older_than(&pool, 30)
+            .await
+            .unwrap();
+        assert_eq!(purged, 1, "only the 40-day-old trash is purged");
+
+        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM meetings ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            ids,
+            vec!["m_live".to_string(), "m_recent".to_string()],
+            "recent trash and live meetings survive the sweep"
+        );
+
+        // Nothing left old enough → second sweep is a no-op.
+        assert_eq!(
+            MeetingsRepository::purge_trash_older_than(&pool, 30)
+                .await
+                .unwrap(),
+            0
+        );
     }
 
     #[tokio::test]

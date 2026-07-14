@@ -1,8 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
-import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, FlaskConical } from 'lucide-react';
-import { useRouter } from 'next/navigation';
+import { Settings2, Mic, Database as DatabaseIcon, SparkleIcon, FlaskConical } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'framer-motion';
 import { TranscriptSettings } from '@/components/TranscriptSettings';
@@ -23,7 +22,6 @@ const TABS = [
 ] as const;
 
 export default function SettingsPage() {
-  const router = useRouter();
   const { transcriptModelConfig, setTranscriptModelConfig } = useConfig();
 
   // Animation state for tabs
@@ -68,13 +66,7 @@ export default function SettingsPage() {
       <div className="sticky top-0 z-10 bg-background/80 backdrop-blur border-b border-border">
         <div className="max-w-6xl mx-auto px-4 md:px-8 py-6">
           <div className="flex items-center gap-4">
-            <button
-              onClick={() => router.back()}
-              className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <ArrowLeft className="w-5 h-5" />
-              <span>Back</span>
-            </button>
+            <Settings2 className="w-7 h-7 text-muted-foreground" />
             <h1 className="text-3xl font-bold">Settings</h1>
           </div>
         </div>

@@ -104,8 +104,7 @@
             "icons/icon.ico"
         ],
         "resources": {
-            "templates/*.json": "templates/",
-            "dist-dlls/*.dll": "./"
+            "templates/*.json": "templates/"
         },
         "externalBin": [
             "binaries/llama-helper",

@@ -60,9 +60,16 @@ rm -rf out
 echo "Installing dependencies..."
 pnpm install
 
-# Delegate to build-gpu.sh — it auto-detects the GPU feature, builds the
-# llama-helper sidecar into src-tauri/binaries/llama-helper-<target-triple>
-# (required by tauri.conf.json's externalBin), then runs `pnpm tauri:build`,
-# which in turn invokes `pnpm build` via Tauri's beforeBuildCommand.
+# Build the llama-helper sidecar into src-tauri/binaries/llama-helper-<target-triple>
+# (required by tauri.conf.json's externalBin). llama-cpp-2 has no CoreML backend,
+# so macOS uses Metal.
+echo "Building llama-helper sidecar..."
+TARGET_TRIPLE=$(rustc -vV | grep "host:" | awk '{print $2}')
+(cd .. && cargo build --release -p llama-helper --features metal)
+mkdir -p src-tauri/binaries
+cp ../target/release/llama-helper "src-tauri/binaries/llama-helper-$TARGET_TRIPLE"
+
+# Run the Tauri build — tauri-auto.js auto-detects the GPU feature, and
+# Tauri's beforeBuildCommand invokes `pnpm build` for the frontend.
 echo "Running GPU-aware Tauri build..."
-./build-gpu.sh
+pnpm run tauri:build

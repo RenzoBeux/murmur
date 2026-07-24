@@ -32,6 +32,8 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, Runtime};
 use tokio_util::sync::CancellationToken;
 
+use crate::summary::llm_client::ImageInput;
+
 // --- Codex OAuth / endpoint constants (pinned to the Codex CLI) ---
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
@@ -559,13 +561,39 @@ fn parse_sse(body: &str) -> Result<String, String> {
     Ok(text.trim().to_string())
 }
 
+/// Build the Responses-API `input` array: a single user message whose content is
+/// the text prompt followed by any images as `input_image` parts. The responses
+/// schema takes `image_url` as a plain string (a data URI here), unlike the
+/// chat/completions `{ "url": ... }` shape. With no images this is byte-for-byte
+/// the old text-only body, so image-less requests are unchanged.
+fn build_codex_input(user_prompt: &str, images: &[ImageInput]) -> serde_json::Value {
+    let mut content = vec![serde_json::json!({
+        "type": "input_text",
+        "text": user_prompt,
+    })];
+    for img in images {
+        content.push(serde_json::json!({
+            "type": "input_image",
+            "image_url": format!("data:{};base64,{}", img.media_type, img.base64_data),
+        }));
+    }
+    serde_json::json!([{
+        "type": "message",
+        "role": "user",
+        "content": content,
+    }])
+}
+
 /// Generate a completion through the ChatGPT subscription (Codex responses
-/// endpoint). Text-only — the codex endpoint does not accept image inputs here.
+/// endpoint). Vision-capable models (GPT-5.x) can read attached images, which are
+/// sent as `input_image` data URIs; pass an empty slice for a text-only call. If
+/// the endpoint rejects the image payload, the caller's text-only retry recovers.
 pub async fn generate_via_codex(
     client: &Client,
     model: &str,
     system_prompt: &str,
     user_prompt: &str,
+    images: &[ImageInput],
     app_data_dir: &Path,
     cancellation_token: Option<&CancellationToken>,
 ) -> Result<String, String> {
@@ -575,11 +603,7 @@ pub async fn generate_via_codex(
     let body = serde_json::json!({
         "model": model,
         "instructions": system_prompt,
-        "input": [{
-            "type": "message",
-            "role": "user",
-            "content": [{ "type": "input_text", "text": user_prompt }]
-        }],
+        "input": build_codex_input(user_prompt, images),
         "store": false,
         "stream": true,
         "include": ["reasoning.encrypted_content"],
@@ -716,6 +740,29 @@ data: [DONE]\n";
         let body = "\
 data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Resumen final\"}]}]}}\n";
         assert_eq!(parse_sse(body).unwrap(), "Resumen final");
+    }
+
+    #[test]
+    fn codex_input_is_text_only_without_images() {
+        let input = build_codex_input("hello", &[]);
+        let content = &input[0]["content"];
+        assert_eq!(content.as_array().unwrap().len(), 1);
+        assert_eq!(content[0]["type"], "input_text");
+        assert_eq!(content[0]["text"], "hello");
+    }
+
+    #[test]
+    fn codex_input_appends_images_as_data_uris() {
+        let images = vec![ImageInput {
+            media_type: "image/png".to_string(),
+            base64_data: "AAAA".to_string(),
+        }];
+        let input = build_codex_input("look", &images);
+        let content = &input[0]["content"];
+        assert_eq!(content.as_array().unwrap().len(), 2);
+        assert_eq!(content[0]["type"], "input_text");
+        assert_eq!(content[1]["type"], "input_image");
+        assert_eq!(content[1]["image_url"], "data:image/png;base64,AAAA");
     }
 
     #[test]

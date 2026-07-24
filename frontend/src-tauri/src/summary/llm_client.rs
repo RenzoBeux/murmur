@@ -319,13 +319,9 @@ pub async fn generate_summary(
     // ChatGPT subscription talks the Codex "responses" protocol (SSE, different
     // endpoint + auth), not chat/completions — handle it in its own module. Auth
     // (token + refresh) lives in a file under app_data_dir, so no api_key needed.
+    // Vision-capable models (GPT-5.x) read attached images; if the endpoint rejects
+    // the image payload, the caller retries text-only.
     if provider == &LLMProvider::ChatGptSubscription {
-        if !images.is_empty() {
-            tracing::warn!(
-                "ChatGPT (subscription) is text-only here — proceeding without {} image(s)",
-                images.len()
-            );
-        }
         let app_data_dir = app_data_dir
             .ok_or_else(|| "app_data_dir is required for ChatGPT subscription".to_string())?;
         return crate::openai::chatgpt_oauth::generate_via_codex(
@@ -333,6 +329,7 @@ pub async fn generate_summary(
             model_name,
             system_prompt,
             user_prompt,
+            images,
             app_data_dir,
             cancellation_token,
         )

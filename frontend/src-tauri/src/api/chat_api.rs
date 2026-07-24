@@ -423,13 +423,37 @@ fn build_system_prompt(
     attendees: Option<&str>,
     attachment_notes: Option<&str>,
 ) -> String {
+    // The grounding instruction adapts to whether the meeting has attachments.
+    // With attachments present, the model must treat them as a source alongside
+    // the transcript — otherwise the "strictly in the transcript" wording makes a
+    // vision model ignore an attached image (delivered to it in the same request)
+    // that plainly answers the question, and it reports the answer as missing.
+    let has_attachments = attachment_notes
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .is_some();
+
     let mut prompt = String::new();
+    prompt.push_str("You are a helpful assistant answering questions about a recorded meeting.\n");
+    if has_attachments {
+        prompt.push_str(
+            "Ground every answer in the meeting transcript below AND in the files the user \
+             attached (listed after this paragraph — any images are provided directly in this \
+             conversation, and text files are inlined). The attachments are authoritative, on \
+             equal footing with the transcript: when the answer appears in an attached image or \
+             file, use it and note which attachment it came from. Only say you cannot find \
+             something when it is absent from BOTH the transcript and every attachment; never \
+             guess. ",
+        );
+    } else {
+        prompt.push_str(
+            "Ground every answer strictly in the meeting transcript below. \
+             Quote only verbatim text that actually appears in the transcript. \
+             If the answer is not in the transcript, say you cannot find it rather than guessing. ",
+        );
+    }
     prompt.push_str(
-        "You are a helpful assistant answering questions about a recorded meeting.\n\
-         Ground every answer strictly in the meeting transcript below. \
-         Quote only verbatim text that actually appears in the transcript. \
-         If the answer is not in the transcript, say you cannot find it rather than guessing. \
-         Each transcript line that has a known speaker is prefixed `Speaker: text` — the \
+        "Each transcript line that has a known speaker is prefixed `Speaker: text` — the \
          label before the colon is the ONLY reliable indicator of who is speaking. \
          \"You\" is the local microphone, \"Others\" is everyone else on the call, and \
          other labels (e.g. speaker_1) come from speaker diarization. \
@@ -549,6 +573,30 @@ mod tests {
 
         let without = build_system_prompt("Standup", "You: hello", None, Some("  "));
         assert!(!without.contains("Attached files"));
+    }
+
+    #[test]
+    fn system_prompt_grounds_in_attachments_when_present() {
+        let prompt = build_system_prompt(
+            "Standup",
+            "You: hello",
+            None,
+            Some("Attached files:\n- owners.png (image/png, shown as image)"),
+        );
+        // Attachments are authorized as a source, and the transcript-only wording
+        // that made the model ignore the image is gone.
+        assert!(prompt.contains("The attachments are authoritative"));
+        assert!(prompt.contains("BOTH the transcript and every attachment"));
+        assert!(!prompt.contains("strictly in the meeting transcript"));
+    }
+
+    #[test]
+    fn system_prompt_stays_transcript_only_without_attachments() {
+        for notes in [None, Some(""), Some("   ")] {
+            let prompt = build_system_prompt("Standup", "You: hello", None, notes);
+            assert!(prompt.contains("strictly in the meeting transcript"));
+            assert!(!prompt.contains("The attachments are authoritative"));
+        }
     }
 }
 

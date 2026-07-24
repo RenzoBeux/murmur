@@ -60,6 +60,10 @@ struct SummaryCacheSource {
     transcript_fingerprint: String,
     custom_prompt_fingerprint: String,
     attendees_fingerprint: String,
+    // Default keeps caches written before attachments existed valid: they were
+    // generated with no attachments, which fingerprints to "".
+    #[serde(default)]
+    attachments_fingerprint: String,
     template_id: String,
     template_fingerprint: String,
     token_threshold: usize,
@@ -79,7 +83,7 @@ struct EnglishSummaryCache {
     output_language: Option<String>,
 }
 
-fn stable_text_fingerprint(text: &str) -> String {
+pub(crate) fn stable_text_fingerprint(text: &str) -> String {
     const FNV_OFFSET: u64 = 0xcbf29ce484222325;
     const FNV_PRIME: u64 = 0x100000001b3;
 
@@ -96,6 +100,7 @@ fn build_summary_cache_source(
     text: &str,
     custom_prompt: &str,
     attendees: Option<&str>,
+    attachments_fingerprint: &str,
     template_id: &str,
     template_fingerprint: &str,
     token_threshold: usize,
@@ -111,6 +116,7 @@ fn build_summary_cache_source(
         transcript_fingerprint: stable_text_fingerprint(text),
         custom_prompt_fingerprint: stable_text_fingerprint(custom_prompt),
         attendees_fingerprint: stable_text_fingerprint(attendees.unwrap_or("")),
+        attachments_fingerprint: attachments_fingerprint.to_string(),
         template_id: template_id.to_string(),
         template_fingerprint: template_fingerprint.to_string(),
         token_threshold,
@@ -328,8 +334,10 @@ impl SummaryService {
             || provider == LLMProvider::BuiltInAI
             || provider == LLMProvider::CustomOpenAI
             || provider == LLMProvider::LMStudio
+            || provider == LLMProvider::ChatGptSubscription
         {
-            // These providers don't require API keys from the standard database column
+            // These providers don't require API keys from the standard database column.
+            // ChatGptSubscription authenticates via OAuth tokens stored under app_data_dir.
             String::new()
         } else {
             match SettingsRepository::get_api_key(&pool, &model_provider).await {
@@ -504,10 +512,23 @@ impl SummaryService {
             info!("📝 Using attendee roster for summary prompts");
         }
 
+        // Attachment context: images for vision-capable providers plus a text
+        // description block. Never fails — degrades to notes.
+        let attachment_ctx =
+            crate::summary::attachment_context::build_attachment_context(&_app, &pool, &meeting_id)
+                .await;
+        if !attachment_ctx.images.is_empty() {
+            info!(
+                "📎 Sending {} image attachment(s) with the summary request",
+                attachment_ctx.images.len()
+            );
+        }
+
         let cache_source = build_summary_cache_source(
             &text,
             &custom_prompt,
             attendees.as_deref(),
+            &attachment_ctx.fingerprint,
             &template_id,
             &template_fingerprint,
             token_threshold,
@@ -570,6 +591,8 @@ impl SummaryService {
             detected_summary_language.as_deref(),
             cached_english.as_deref(),
             attendees.as_deref(),
+            &attachment_ctx.images,
+            attachment_ctx.notes(),
         )
         .await;
 
@@ -753,6 +776,7 @@ mod tests {
             "transcript body",
             "custom prompt",
             Some("Renzo, Lean"),
+            "",
             "standard_meeting",
             &template_fingerprint,
             3700,
@@ -853,6 +877,7 @@ mod tests {
                 "changed transcript",
                 "custom prompt",
                 Some("Renzo, Lean"),
+                "",
                 "standard_meeting",
                 &template_fingerprint,
                 3700,
@@ -868,6 +893,7 @@ mod tests {
                 "transcript body",
                 "changed prompt",
                 Some("Renzo, Lean"),
+                "",
                 "standard_meeting",
                 &template_fingerprint,
                 3700,
@@ -883,6 +909,7 @@ mod tests {
                 "transcript body",
                 "custom prompt",
                 Some("Renzo, Lean"),
+                "",
                 "daily_standup",
                 &template_fingerprint,
                 3700,
@@ -898,6 +925,7 @@ mod tests {
                 "transcript body",
                 "custom prompt",
                 Some("Renzo, Lean"),
+                "",
                 "standard_meeting",
                 &template_fingerprint,
                 3700,
@@ -913,6 +941,7 @@ mod tests {
                 "transcript body",
                 "custom prompt",
                 Some("Renzo, Lean"),
+                "",
                 "standard_meeting",
                 &template_fingerprint,
                 3700,
@@ -928,6 +957,7 @@ mod tests {
                 "transcript body",
                 "custom prompt",
                 Some("Renzo, Lean"),
+                "",
                 "standard_meeting",
                 &template_fingerprint,
                 3700,
@@ -943,6 +973,7 @@ mod tests {
                 "transcript body",
                 "custom prompt",
                 Some("Renzo, Lean"),
+                "",
                 "standard_meeting",
                 &template_fingerprint,
                 3700,

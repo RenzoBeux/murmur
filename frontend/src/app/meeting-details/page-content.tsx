@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { Summary, SummaryResponse, Transcript } from '@/types';
 import { invoke } from '@tauri-apps/api/core';
@@ -7,11 +7,14 @@ import { toast } from 'sonner';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
 import { SummaryPanel } from '@/components/MeetingDetails/SummaryPanel';
 import { ChatPanel } from '@/components/MeetingDetails/ChatPanel';
+import { AttachmentsPanel } from '@/components/MeetingDetails/AttachmentsPanel';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { FileText, MessageSquare } from 'lucide-react';
+import { FileText, MessageSquare, Paperclip } from 'lucide-react';
+import { FileDropClaim, useFileDropTarget } from '@/contexts/FileDropContext';
 
 // Custom hooks
+import { useAttachments } from '@/hooks/meeting-details/useAttachments';
 import { useMeetingData } from '@/hooks/meeting-details/useMeetingData';
 import { useSummaryGeneration } from '@/hooks/meeting-details/useSummaryGeneration';
 import { useTemplates } from '@/hooks/meeting-details/useTemplates';
@@ -72,6 +75,26 @@ export default function PageContent({
   // Custom hooks
   const meetingData = useMeetingData({ meeting, summaryData, onMeetingUpdated });
   const templates = useTemplates();
+
+  // Attachments (photos/files for context). Registered as the page's file-drop
+  // target here — not in AttachmentsPanel — because Radix unmounts inactive
+  // tabs, and drops should attach whichever tab is active.
+  const attachmentsApi = useAttachments(meeting.id);
+  const { addFromPaths } = attachmentsApi;
+  const dropClaim = useMemo<FileDropClaim>(
+    () => ({
+      onDrop: (paths: string[]) => {
+        addFromPaths(paths);
+        return true;
+      },
+      overlay: {
+        title: 'Drop files to attach',
+        subtitle: 'Photos and documents are added to this meeting',
+      },
+    }),
+    [addFromPaths],
+  );
+  useFileDropTarget(dropClaim);
 
   // Load the persisted attendee roster for this meeting. The backend injects it
   // into summary prompts so the LLM uses canonical name spellings.
@@ -241,6 +264,14 @@ export default function PageContent({
               <TabsTrigger value="chat" className="gap-1.5">
                 <MessageSquare className="h-4 w-4" /> Chat
               </TabsTrigger>
+              <TabsTrigger value="attachments" className="gap-1.5">
+                <Paperclip className="h-4 w-4" /> Attachments
+                {attachmentsApi.attachments.length > 0 && (
+                  <span className="rounded-full bg-muted px-1.5 text-xs text-muted-foreground">
+                    {attachmentsApi.attachments.length}
+                  </span>
+                )}
+              </TabsTrigger>
             </TabsList>
           </div>
           <TabsContent value="summary" className="flex-1 min-h-0 mt-0 flex flex-col overflow-hidden">
@@ -284,6 +315,12 @@ export default function PageContent({
             <ChatPanel
               meetingId={meeting.id}
               hasTranscripts={meetingData.transcripts.length > 0}
+            />
+          </TabsContent>
+          <TabsContent value="attachments" className="flex-1 min-h-0 mt-0 overflow-hidden">
+            <AttachmentsPanel
+              attachmentsApi={attachmentsApi}
+              hasSummary={!!meetingData.aiSummary}
             />
           </TabsContent>
         </Tabs>

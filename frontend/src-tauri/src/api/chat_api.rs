@@ -8,8 +8,63 @@ use crate::database::repositories::{
 use crate::state::AppState;
 use crate::summary::llm_client::{generate_summary, LLMProvider};
 
-const MAX_TRANSCRIPT_CHARS: usize = 30_000;
+/// Transcript budget when the model's context size is unknown (LM Studio, or a
+/// failed Ollama metadata fetch). ~8k tokens — safe for most local models.
+const DEFAULT_MAX_TRANSCRIPT_CHARS: usize = 30_000;
 const MAX_HISTORY_MESSAGES: usize = 20;
+
+/// Rough chars-per-token used to convert a context size into a char budget.
+const CHARS_PER_TOKEN: usize = 4;
+/// Tokens reserved out of the context for the system-prompt boilerplate, chat
+/// history, attachments block, and the model's answer.
+const RESERVED_TOKENS: usize = 2_000;
+
+/// How many transcript characters this provider/model can take. Mirrors the
+/// summary path's sizing: cloud providers get everything, Ollama sizes to the
+/// model's real context (the same metadata cache the summarizer uses), the
+/// built-in sidecar sizes to its registry entry, and LM Studio (which doesn't
+/// advertise context size) keeps the conservative default.
+async fn transcript_char_budget(
+    provider: &LLMProvider,
+    model: &str,
+    ollama_endpoint: Option<&str>,
+) -> usize {
+    match provider {
+        LLMProvider::OpenAI
+        | LLMProvider::Claude
+        | LLMProvider::Groq
+        | LLMProvider::OpenRouter
+        | LLMProvider::CustomOpenAI
+        | LLMProvider::ChatGptSubscription => usize::MAX,
+        LLMProvider::Ollama => {
+            match crate::ollama::metadata::METADATA_CACHE
+                .get_or_fetch(model, ollama_endpoint)
+                .await
+            {
+                Ok(meta) => {
+                    meta.context_size.saturating_sub(RESERVED_TOKENS).max(1_000) * CHARS_PER_TOKEN
+                }
+                Err(e) => {
+                    log_info!(
+                        "No context metadata for {} ({}); using default transcript budget",
+                        model,
+                        e
+                    );
+                    DEFAULT_MAX_TRANSCRIPT_CHARS
+                }
+            }
+        }
+        LLMProvider::BuiltInAI => crate::summary::summary_engine::models::get_model_by_name(model)
+            .map(|m| {
+                (m.context_size as usize)
+                    .saturating_sub(RESERVED_TOKENS)
+                    .max(1_000)
+                    * CHARS_PER_TOKEN
+            })
+            .unwrap_or(DEFAULT_MAX_TRANSCRIPT_CHARS),
+        LLMProvider::LMStudio => DEFAULT_MAX_TRANSCRIPT_CHARS,
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -93,19 +148,35 @@ pub async fn api_send_chat_message<R: Runtime>(
         }
     };
 
-    // Build prompts.
-    let transcript_text = build_transcript_text(&meeting);
-    let system_prompt = build_system_prompt(&meeting.title, &transcript_text, attendees.as_deref());
-    let user_prompt = build_user_prompt(&history, trimmed_message);
+    // Attachment context: image payloads for vision-capable providers and a
+    // text block describing every attachment. Never fails.
+    let attachment_ctx =
+        crate::summary::attachment_context::build_attachment_context(&app, pool, &meeting_id).await;
 
     // Resolve provider + auxiliary config.
     let provider_enum = LLMProvider::from_str(&provider)?;
+
+    // The built-in sidecar cannot view images — drop them and say so in the
+    // prompt, so the model doesn't hallucinate having seen the files.
+    let mut attachment_notes = attachment_ctx.notes().map(str::to_string);
+    let images: &[crate::summary::llm_client::ImageInput] =
+        if matches!(provider_enum, LLMProvider::BuiltInAI) && !attachment_ctx.images.is_empty() {
+            let note = format!(
+                "\n({} image attachment(s) were provided but this model cannot view images.)",
+                attachment_ctx.images.len()
+            );
+            attachment_notes = Some(attachment_notes.unwrap_or_default() + &note);
+            &[]
+        } else {
+            &attachment_ctx.images
+        };
 
     let api_key: String = match &provider_enum {
         LLMProvider::Ollama
         | LLMProvider::BuiltInAI
         | LLMProvider::CustomOpenAI
-        | LLMProvider::LMStudio => String::new(),
+        | LLMProvider::LMStudio
+        | LLMProvider::ChatGptSubscription => String::new(),
         LLMProvider::OpenAI | LLMProvider::Claude | LLMProvider::Groq | LLMProvider::OpenRouter => {
             match SettingsRepository::get_api_key(pool, &provider).await {
                 Ok(Some(key)) if !key.is_empty() => key,
@@ -166,7 +237,12 @@ pub async fn api_send_chat_message<R: Runtime>(
         api_key
     };
 
-    let app_data_dir = if matches!(provider_enum, LLMProvider::BuiltInAI) {
+    // BuiltInAI needs it for the sidecar; ChatGptSubscription needs it to locate
+    // the stored OAuth tokens.
+    let app_data_dir = if matches!(
+        provider_enum,
+        LLMProvider::BuiltInAI | LLMProvider::ChatGptSubscription
+    ) {
         Some(
             app.path()
                 .app_data_dir()
@@ -176,14 +252,28 @@ pub async fn api_send_chat_message<R: Runtime>(
         None
     };
 
+    // Build prompts, sizing the transcript to the model's real context (cloud
+    // providers get the full transcript, mirroring the summary path).
+    let char_budget =
+        transcript_char_budget(&provider_enum, &model, ollama_endpoint.as_deref()).await;
+    let transcript_text = build_transcript_text(&meeting, char_budget);
+    let system_prompt = build_system_prompt(
+        &meeting.title,
+        &transcript_text,
+        attendees.as_deref(),
+        attachment_notes.as_deref(),
+    );
+    let user_prompt = build_user_prompt(&history, trimmed_message);
+
     let client = reqwest::Client::new();
-    let answer_result = generate_summary(
+    let mut answer_result = generate_summary(
         &client,
         &provider_enum,
         &model,
         &final_api_key,
         &system_prompt,
         &user_prompt,
+        images,
         ollama_endpoint.as_deref(),
         custom_openai_endpoint.as_deref(),
         lmstudio_endpoint.as_deref(),
@@ -194,6 +284,42 @@ pub async fn api_send_chat_message<R: Runtime>(
         None,
     )
     .await;
+
+    // A model without vision support may reject the multimodal payload; retry
+    // once text-only with an omission note before failing the chat turn.
+    if answer_result.is_err() && !images.is_empty() {
+        log_error!(
+            "Chat with {} image(s) failed for {}; retrying text-only",
+            images.len(),
+            meeting_id
+        );
+        let retry_system_prompt = format!(
+            "{}\n(Note: {} image attachment(s) could not be delivered to this model and were omitted.)",
+            system_prompt,
+            images.len()
+        );
+        let retry = generate_summary(
+            &client,
+            &provider_enum,
+            &model,
+            &final_api_key,
+            &retry_system_prompt,
+            &user_prompt,
+            &[],
+            ollama_endpoint.as_deref(),
+            custom_openai_endpoint.as_deref(),
+            lmstudio_endpoint.as_deref(),
+            custom_openai_max_tokens,
+            custom_openai_temperature,
+            custom_openai_top_p,
+            app_data_dir.as_ref(),
+            None,
+        )
+        .await;
+        if retry.is_ok() {
+            answer_result = retry;
+        }
+    }
 
     let answer = match answer_result {
         Ok(text) => text.trim().to_string(),
@@ -253,7 +379,10 @@ fn speaker_display_name(tag: &str) -> &str {
     }
 }
 
-fn build_transcript_text(meeting: &crate::api::api::MeetingDetails) -> String {
+fn build_transcript_text(
+    meeting: &crate::api::api::MeetingDetails,
+    max_chars: usize,
+) -> String {
     let mut joined = meeting
         .transcripts
         .iter()
@@ -270,14 +399,14 @@ fn build_transcript_text(meeting: &crate::api::api::MeetingDetails) -> String {
         .collect::<Vec<_>>()
         .join("\n");
 
-    if joined.chars().count() > MAX_TRANSCRIPT_CHARS {
+    if max_chars != usize::MAX && joined.chars().count() > max_chars {
         // Keep the meeting's opening AND its conclusion/action-items instead of only the
-        // first 30k chars (the old head-only cut hid the end of every long meeting, so
+        // head (the old head-only cut hid the end of every long meeting, so
         // "what did we decide at the end?" always failed). Char-boundary safe.
         let chars: Vec<char> = joined.chars().collect();
         let total = chars.len();
-        let head_len = (MAX_TRANSCRIPT_CHARS * 3) / 5; // 60% opening
-        let tail_len = MAX_TRANSCRIPT_CHARS - head_len; // 40% conclusion
+        let head_len = (max_chars * 3) / 5; // 60% opening
+        let tail_len = max_chars - head_len; // 40% conclusion
         let head: String = chars[..head_len].iter().collect();
         let tail: String = chars[total - tail_len..].iter().collect();
         let omitted = total - head_len - tail_len;
@@ -292,6 +421,7 @@ fn build_system_prompt(
     meeting_title: &str,
     transcript_text: &str,
     attendees: Option<&str>,
+    attachment_notes: Option<&str>,
 ) -> String {
     let mut prompt = String::new();
     prompt.push_str(
@@ -318,6 +448,10 @@ fn build_system_prompt(
              who are neither in this list nor in the transcript.\n\n"
         ));
     }
+    if let Some(notes) = attachment_notes.map(str::trim).filter(|n| !n.is_empty()) {
+        prompt.push_str(notes);
+        prompt.push_str("\n\n");
+    }
     prompt.push_str(&format!("Meeting title: {}\n\n", meeting_title));
     prompt.push_str("--- TRANSCRIPT ---\n");
     if transcript_text.is_empty() {
@@ -336,7 +470,8 @@ mod tests {
 
     #[test]
     fn system_prompt_includes_attendee_roster_when_provided() {
-        let prompt = build_system_prompt("Standup", "You: hello", Some("Renzo, Lean, Sofía"));
+        let prompt =
+            build_system_prompt("Standup", "You: hello", Some("Renzo, Lean, Sofía"), None);
 
         assert!(prompt.contains("Renzo, Lean, Sofía"));
         assert!(prompt.contains("canonical spelling"));
@@ -345,17 +480,75 @@ mod tests {
     #[test]
     fn system_prompt_omits_roster_block_when_absent_or_blank() {
         for attendees in [None, Some(""), Some("   \n")] {
-            let prompt = build_system_prompt("Standup", "You: hello", attendees);
+            let prompt = build_system_prompt("Standup", "You: hello", attendees, None);
             assert!(!prompt.contains("Attendees (canonical names"));
         }
     }
 
     #[test]
     fn system_prompt_always_carries_attribution_rules() {
-        let prompt = build_system_prompt("Standup", "You: hello", None);
+        let prompt = build_system_prompt("Standup", "You: hello", None, None);
 
         assert!(prompt.contains("ONLY reliable indicator"));
         assert!(prompt.contains("NOT necessarily the speaker"));
+    }
+
+    fn meeting_with_text(text: &str) -> crate::api::api::MeetingDetails {
+        crate::api::api::MeetingDetails {
+            id: "m1".to_string(),
+            title: "T".to_string(),
+            created_at: "2026-07-23".to_string(),
+            updated_at: "2026-07-23".to_string(),
+            transcripts: vec![crate::api::api::MeetingTranscript {
+                id: "t1".to_string(),
+                text: text.to_string(),
+                timestamp: "[00:00]".to_string(),
+                audio_start_time: None,
+                audio_end_time: None,
+                duration: None,
+                speaker: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn transcript_untruncated_when_budget_is_unlimited() {
+        let meeting = meeting_with_text(&"x".repeat(100_000));
+        let text = build_transcript_text(&meeting, usize::MAX);
+        assert_eq!(text.len(), 100_000);
+        assert!(!text.contains("omitted for length"));
+    }
+
+    #[test]
+    fn transcript_keeps_head_and_tail_when_over_budget() {
+        let meeting = meeting_with_text(&format!("START{}END", "x".repeat(50_000)));
+        let text = build_transcript_text(&meeting, 10_000);
+        assert!(text.starts_with("START"));
+        assert!(text.ends_with("END"));
+        assert!(text.contains("omitted for length"));
+        // Head + tail + omission marker stays close to the budget.
+        assert!(text.chars().count() < 11_000);
+    }
+
+    #[test]
+    fn transcript_under_budget_passes_through() {
+        let meeting = meeting_with_text("short transcript");
+        let text = build_transcript_text(&meeting, 30_000);
+        assert_eq!(text, "short transcript");
+    }
+
+    #[test]
+    fn system_prompt_includes_attachment_notes_when_provided() {
+        let prompt = build_system_prompt(
+            "Standup",
+            "You: hello",
+            None,
+            Some("Attached files:\n- whiteboard.png (image/png, shown as image)"),
+        );
+        assert!(prompt.contains("whiteboard.png"));
+
+        let without = build_system_prompt("Standup", "You: hello", None, Some("  "));
+        assert!(!without.contains("Attached files"));
     }
 }
 

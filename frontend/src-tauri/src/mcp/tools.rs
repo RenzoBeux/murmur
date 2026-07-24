@@ -413,10 +413,54 @@ pub async fn get_summary(pool: &SqlitePool, meeting_id: &str) -> Result<String> 
     }
 }
 
+/// Whether the `meeting_attachments` table exists. A pre-attachments DB opened
+/// via `--db` simply renders no attachments section.
+async fn meeting_attachments_exists(pool: &SqlitePool) -> bool {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'meeting_attachments'",
+    )
+    .fetch_one(pool)
+    .await
+    .map(|count| count > 0)
+    .unwrap_or(false)
+}
+
+/// Markdown list of a meeting's attachments, or None when there are none (or
+/// the table doesn't exist in this DB).
+async fn render_attachments(pool: &SqlitePool, meeting_id: &str) -> Option<String> {
+    if !meeting_attachments_exists(pool).await {
+        return None;
+    }
+    let rows = sqlx::query(
+        "SELECT file_name, mime_type, size_bytes FROM meeting_attachments \
+         WHERE meeting_id = ? ORDER BY created_at ASC, id ASC",
+    )
+    .bind(meeting_id)
+    .fetch_all(pool)
+    .await
+    .ok()?;
+    if rows.is_empty() {
+        return None;
+    }
+    let mut out = String::from("## Attachments\n");
+    for row in rows {
+        let file_name: String = row.try_get("file_name").unwrap_or_default();
+        let mime_type: String = row.try_get("mime_type").unwrap_or_default();
+        let size_bytes: i64 = row.try_get("size_bytes").unwrap_or_default();
+        out.push_str(&format!("- {file_name} ({mime_type}, {size_bytes} bytes)\n"));
+    }
+    Some(out)
+}
+
 pub async fn get_meeting(pool: &SqlitePool, meeting_id: &str) -> Result<String> {
     let summary = get_summary(pool, meeting_id).await?;
     let transcript = get_transcript(pool, meeting_id).await?;
-    Ok(format!("{summary}\n\n---\n\n{transcript}"))
+    match render_attachments(pool, meeting_id).await {
+        Some(attachments) => Ok(format!(
+            "{summary}\n\n---\n\n{attachments}\n---\n\n{transcript}"
+        )),
+        None => Ok(format!("{summary}\n\n---\n\n{transcript}")),
+    }
 }
 
 pub async fn search_transcripts(

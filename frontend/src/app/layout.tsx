@@ -10,7 +10,7 @@ import "sonner/dist/styles.css"
 import { ThemeProvider } from 'next-themes'
 import { ThemeSync, ThemedToaster } from '@/components/ThemeSync'
 import { Titlebar } from '@/components/WindowChrome/Titlebar'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { listen, UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { TooltipProvider } from '@/components/ui/tooltip'
@@ -25,6 +25,7 @@ import { DownloadProgressToastProvider } from '@/components/shared/DownloadProgr
 import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcessingProvider'
 import { ImportAudioDialog, ImportDropOverlay } from '@/components/ImportAudio'
 import { ImportDialogProvider } from '@/contexts/ImportDialogContext'
+import { FileDropProvider, FileDropClaim } from '@/contexts/FileDropContext'
 import { isAudioExtension, getAudioFormatsDisplayList } from '@/constants/audioFormats'
 
 
@@ -82,6 +83,11 @@ export default function RootLayout({
   const [showDropOverlay, setShowDropOverlay] = useState(false)
   const [showImportDialog, setShowImportDialog] = useState(false)
   const [importFilePath, setImportFilePath] = useState<string | null>(null)
+
+  // Active file-drop claim (e.g. meeting-details attachments). When set, drops
+  // route to the claim instead of the beta-gated audio-import flow.
+  const dropClaimRef = useRef<FileDropClaim | null>(null)
+  const [dropOverlayCopy, setDropOverlayCopy] = useState<{ title: string; subtitle?: string } | null>(null)
 
   useEffect(() => {
     // Browser preview (pnpm dev opened outside Tauri): there is no backend to
@@ -201,9 +207,15 @@ export default function RootLayout({
     const cleanedUpRef = { current: false };
 
     const setupListeners = async () => {
-      // Drag enter/over - show overlay only if beta feature is enabled
+      // Drag enter/over — an active drop claim (attachments) wins; otherwise
+      // show the audio-import overlay only if the beta feature is enabled.
       const unlistenDragEnter = await listen('tauri://drag-enter', () => {
-        if (loadBetaFeatures().importAndRetranscribe) {
+        const claim = dropClaimRef.current;
+        if (claim) {
+          setDropOverlayCopy(claim.overlay);
+          setShowDropOverlay(true);
+        } else if (loadBetaFeatures().importAndRetranscribe) {
+          setDropOverlayCopy(null);
           setShowDropOverlay(true);
         }
       });
@@ -227,6 +239,9 @@ export default function RootLayout({
       // Drop - process files
       const unlistenDrop = await listen<{ paths: string[] }>('tauri://drag-drop', (event) => {
         setShowDropOverlay(false);
+        if (dropClaimRef.current?.onDrop(event.payload.paths)) {
+          return;
+        }
         handleFileDrop(event.payload.paths);
       });
       if (cleanedUpRef.current) {
@@ -299,6 +314,7 @@ export default function RootLayout({
                         <TooltipProvider>
                           <RecordingPostProcessingProvider>
                             <ImportDialogProvider onOpen={handleOpenImportDialog}>
+                            <FileDropProvider claimRef={dropClaimRef}>
                               {/* Download progress toast provider - listens for background downloads */}
                               <DownloadProgressToastProvider />
 
@@ -311,13 +327,18 @@ export default function RootLayout({
                                   <MainContent>{children}</MainContent>
                                 </div>
                               )}
-                              {/* Import audio overlay and dialog */}
-                              <ImportDropOverlay visible={showDropOverlay} />
+                              {/* Drop overlay (attachments claim or audio import) and import dialog */}
+                              <ImportDropOverlay
+                                visible={showDropOverlay}
+                                title={dropOverlayCopy?.title}
+                                subtitle={dropOverlayCopy?.subtitle}
+                              />
                               <ConditionalImportDialog
                                 showImportDialog={showImportDialog}
                                 handleImportDialogClose={handleImportDialogClose}
                                 importFilePath={importFilePath}
                               />
+                            </FileDropProvider>
                             </ImportDialogProvider>
                           </RecordingPostProcessingProvider>
                         </TooltipProvider>

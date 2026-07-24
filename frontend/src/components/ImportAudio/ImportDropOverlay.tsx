@@ -4,9 +4,12 @@ import { getAudioFormatsDisplayList } from '@/constants/audioFormats';
 
 interface ImportDropOverlayProps {
   visible: boolean;
+  /** Defaults keep the original audio-import copy. */
+  title?: string;
+  subtitle?: string;
 }
 
-export function ImportDropOverlay({ visible }: ImportDropOverlayProps) {
+export function ImportDropOverlay({ visible, title, subtitle }: ImportDropOverlayProps) {
   if (!visible) return null;
 
   return (
@@ -19,8 +22,12 @@ export function ImportDropOverlay({ visible }: ImportDropOverlayProps) {
                       p-12 text-center bg-brand/10 shadow-glass
                       transform scale-100 transition-transform">
         <Upload className="h-16 w-16 text-brand mx-auto mb-4" />
-        <p className="text-xl font-medium text-foreground">Drop audio file to import</p>
-        <p className="text-sm text-muted-foreground mt-2">{getAudioFormatsDisplayList()}</p>
+        <p className="text-xl font-medium text-foreground">
+          {title ?? 'Drop audio file to import'}
+        </p>
+        <p className="text-sm text-muted-foreground mt-2">
+          {subtitle ?? getAudioFormatsDisplayList()}
+        </p>
       </div>
     </div>
   );

@@ -664,10 +664,22 @@ pub fn run() {
             api::api_save_custom_openai_config,
             api::api_get_custom_openai_config,
             api::api_test_custom_openai_connection,
+            // ChatGPT subscription (OAuth) commands
+            openai::chatgpt_oauth::chatgpt_sign_in,
+            openai::chatgpt_oauth::chatgpt_sign_out,
+            openai::chatgpt_oauth::chatgpt_status,
+            openai::chatgpt_oauth::chatgpt_list_models,
             // Meeting chat commands
             api::chat_api::api_send_chat_message,
             api::chat_api::api_get_chat_history,
             api::chat_api::api_clear_chat_history,
+            // Attachment commands
+            api::attachments_api::api_add_attachments,
+            api::attachments_api::api_add_attachments_from_paths,
+            api::attachments_api::api_list_attachments,
+            api::attachments_api::api_read_attachment_file,
+            api::attachments_api::api_delete_attachment,
+            api::attachments_api::api_open_attachment,
             // Summary commands
             summary::commands::api_process_transcript,
             summary::commands::api_get_summary,

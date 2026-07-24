@@ -796,7 +796,7 @@ pub async fn api_list_trashed_meetings<R: Runtime>(
 /// Trash view's "Delete permanently" action.
 #[tauri::command]
 pub async fn api_purge_meeting<R: Runtime>(
-    _app: AppHandle<R>,
+    app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
     meeting_id: String,
     auth_token: Option<String>,
@@ -808,10 +808,13 @@ pub async fn api_purge_meeting<R: Runtime>(
     );
     let pool = state.db_manager.pool();
     match MeetingsRepository::purge_meeting(pool, &meeting_id).await {
-        Ok(true) => Ok(serde_json::json!({
-            "status": "success",
-            "message": "Meeting permanently deleted"
-        })),
+        Ok(true) => {
+            crate::api::attachments_api::remove_meeting_attachment_files(&app, &meeting_id);
+            Ok(serde_json::json!({
+                "status": "success",
+                "message": "Meeting permanently deleted"
+            }))
+        }
         Ok(false) => Err(format!("Meeting not found: {}", meeting_id)),
         Err(e) => {
             log_error!("Error purging meeting {}: {}", meeting_id, e);

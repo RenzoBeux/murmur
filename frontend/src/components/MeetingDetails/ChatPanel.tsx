@@ -27,7 +27,7 @@ interface ChatPanelProps {
   hasTranscripts: boolean;
 }
 
-type ChatProvider = 'ollama' | 'claude' | 'groq' | 'openai' | 'builtin-ai' | 'custom-openai' | 'openrouter' | 'lmstudio';
+type ChatProvider = 'ollama' | 'claude' | 'groq' | 'openai' | 'builtin-ai' | 'custom-openai' | 'openrouter' | 'lmstudio' | 'chatgpt-subscription';
 
 const PROVIDER_LABEL: Record<ChatProvider, string> = {
   ollama: 'Ollama (local)',
@@ -38,6 +38,7 @@ const PROVIDER_LABEL: Record<ChatProvider, string> = {
   'custom-openai': 'Custom OpenAI',
   openrouter: 'OpenRouter',
   lmstudio: 'LM Studio (local)',
+  'chatgpt-subscription': 'ChatGPT (subscription)',
 };
 
 export function ChatPanel({ meetingId, hasTranscripts }: ChatPanelProps) {

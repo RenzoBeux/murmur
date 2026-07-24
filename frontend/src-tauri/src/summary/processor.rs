@@ -1,4 +1,4 @@
-use crate::summary::llm_client::{generate_summary, LLMProvider};
+use crate::summary::llm_client::{generate_summary, ImageInput, LLMProvider};
 use crate::summary::templates::Template;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -366,6 +366,9 @@ pub fn extract_meeting_name_from_markdown(markdown: &str) -> Option<String> {
 /// * `detected_transcript_language` - Optional detected transcript language BCP-47 tag
 /// * `cached_english` - Optional previously-generated English summary to skip pass 1 when translating
 /// * `attendees` - Optional user-provided attendee roster (canonical name spellings)
+/// * `images` - Image attachments for vision-capable models; sent on the final report
+///   call only (chunk/combine/translate passes work on derived text and stay text-only)
+/// * `attachment_notes` - Optional text block describing the meeting's attachments
 ///
 /// # Returns
 /// Tuple of (final_summary_markdown, english_summary_markdown, number_of_chunks_processed)
@@ -393,6 +396,8 @@ pub async fn generate_meeting_summary(
     detected_transcript_language: Option<&str>,
     cached_english: Option<&str>,
     attendees: Option<&str>,
+    images: &[ImageInput],
+    attachment_notes: Option<&str>,
 ) -> Result<(String, String, i64), String> {
     if let Some(token) = cancellation_token {
         if token.is_cancelled() {
@@ -461,6 +466,7 @@ pub async fn generate_meeting_summary(
                     api_key,
                     system_prompt_chunk,
                     &user_prompt_chunk,
+                    &[],
                     ollama_endpoint,
                     custom_openai_endpoint,
                     lmstudio_endpoint,
@@ -528,6 +534,7 @@ pub async fn generate_meeting_summary(
                     api_key,
                     system_prompt_combine,
                     &user_prompt_combine,
+                    &[],
                     ollama_endpoint,
                     custom_openai_endpoint,
                     lmstudio_endpoint,
@@ -565,6 +572,25 @@ pub async fn generate_meeting_summary(
             final_user_prompt.push_str("\n</user_context>");
         }
 
+        if let Some(notes) = attachment_notes.filter(|n| !n.is_empty()) {
+            final_user_prompt.push_str("\n\nAttachments:\n");
+            final_user_prompt.push_str(notes);
+        }
+
+        // The built-in sidecar is text-only: drop the image payload and tell the
+        // model why, so it doesn't hallucinate having seen the files.
+        let final_images: &[ImageInput] = if provider == &LLMProvider::BuiltInAI {
+            if !images.is_empty() {
+                final_user_prompt.push_str(&format!(
+                    "\n\n({} image attachment(s) were provided but this model cannot view images.)",
+                    images.len()
+                ));
+            }
+            &[]
+        } else {
+            images
+        };
+
         // Check cancellation before final summary generation
         if let Some(token) = cancellation_token {
             if token.is_cancelled() {
@@ -573,13 +599,14 @@ pub async fn generate_meeting_summary(
             }
         }
 
-        let raw_markdown = generate_summary_with_retry(
+        let mut final_result = generate_summary_with_retry(
             client,
             provider,
             model_name,
             api_key,
             &final_system_prompt,
             &final_user_prompt,
+            final_images,
             ollama_endpoint,
             custom_openai_endpoint,
             lmstudio_endpoint,
@@ -589,7 +616,47 @@ pub async fn generate_meeting_summary(
             app_data_dir,
             cancellation_token,
         )
-        .await?;
+        .await;
+
+        // Degradation path: a model without vision support may reject the
+        // multimodal payload outright. Rather than failing the whole summary,
+        // retry once text-only with a note that the images were omitted.
+        if let Err(e) = &final_result {
+            if !final_images.is_empty() && !e.contains("cancelled") {
+                warn!(
+                    "Final summary with {} image(s) failed ({}); retrying text-only",
+                    final_images.len(),
+                    e
+                );
+                let mut text_only_prompt = final_user_prompt.clone();
+                text_only_prompt.push_str(&format!(
+                    "\n\n(Note: {} image attachment(s) could not be delivered to this model and were omitted.)",
+                    final_images.len()
+                ));
+                let retry = generate_summary_with_retry(
+                    client,
+                    provider,
+                    model_name,
+                    api_key,
+                    &final_system_prompt,
+                    &text_only_prompt,
+                    &[],
+                    ollama_endpoint,
+                    custom_openai_endpoint,
+                    lmstudio_endpoint,
+                    max_tokens,
+                    temperature,
+                    top_p,
+                    app_data_dir,
+                    cancellation_token,
+                )
+                .await;
+                if retry.is_ok() {
+                    final_result = retry;
+                }
+            }
+        }
+        let raw_markdown = final_result?;
 
         let english_markdown = clean_llm_markdown_output(&raw_markdown);
         info!("Summary pass completed ({} chars)", english_markdown.len());
@@ -675,6 +742,7 @@ async fn generate_summary_with_retry(
     api_key: &str,
     system_prompt: &str,
     user_prompt: &str,
+    images: &[ImageInput],
     ollama_endpoint: Option<&str>,
     custom_openai_endpoint: Option<&str>,
     lmstudio_endpoint: Option<&str>,
@@ -695,6 +763,7 @@ async fn generate_summary_with_retry(
             api_key,
             system_prompt,
             user_prompt,
+            images,
             ollama_endpoint,
             custom_openai_endpoint,
             lmstudio_endpoint,
@@ -751,6 +820,7 @@ async fn run_markdown_transform(
         api_key,
         system_prompt,
         user_prompt,
+        &[],
         ollama_endpoint,
         custom_openai_endpoint,
         lmstudio_endpoint,

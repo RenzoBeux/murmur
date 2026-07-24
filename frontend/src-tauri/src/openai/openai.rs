@@ -37,31 +37,27 @@ static MODELS_CACHE: RwLock<Option<CacheEntry>> = RwLock::new(None);
 /// Cache TTL in seconds
 const CACHE_TTL_SECS: u64 = 300;
 
-/// Fallback models when API fetch fails (matches frontend hardcoded values)
+/// Fallback models when API fetch fails (matches frontend hardcoded values).
+/// With an API key the list is fetched live from /v1/models, so dated
+/// snapshot ids are omitted here — the aliases resolve to the latest snapshot.
 const FALLBACK_MODELS: &[&str] = &[
+    "gpt-5.1",
+    "gpt-5.1-chat-latest",
     "gpt-5",
     "gpt-5-mini",
-    "gpt-4o",
+    "gpt-5-nano",
+    // gpt-4.1 family: 1M-token context window
     "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4.1-nano",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "o4-mini",
+    "o3",
+    "o3-mini",
+    "o1",
     "gpt-4-turbo",
     "gpt-3.5-turbo",
-    "gpt-4o-2024-11-20",
-    "gpt-4o-2024-08-06",
-    "gpt-4o-mini-2024-07-18",
-    "gpt-4.1-2025-04-14",
-    "gpt-4.1-nano-2025-04-14",
-    "gpt-4.1-mini-2025-04-14",
-    "o4-mini-2025-04-16",
-    "o3-2025-04-16",
-    "o3-mini-2025-01-31",
-    "o1-2024-12-17",
-    "o1-mini-2024-09-12",
-    "gpt-4-turbo-2024-04-09",
-    "gpt-4-0125-Preview",
-    "gpt-4-vision-preview",
-    "gpt-4-1106-Preview",
-    "gpt-3.5-turbo-0125",
-    "gpt-3.5-turbo-1106",
 ];
 
 /// Get fallback models as OpenAIModel vec
@@ -78,9 +74,9 @@ fn is_chat_model(model_id: &str) -> bool {
     // Include gpt-*, o1-*, o3-*, o4-* models
     // Exclude embedding, tts, whisper, dall-e, babbage, davinci (non-chat models)
     (id.starts_with("gpt-")
-        || id.starts_with("o1-")
-        || id.starts_with("o3-")
-        || id.starts_with("o4-")
+        || id.starts_with("o1")
+        || id.starts_with("o3")
+        || id.starts_with("o4")
         || id.starts_with("chatgpt-"))
         && !id.contains("embedding")
         && !id.contains("tts")
@@ -91,6 +87,11 @@ fn is_chat_model(model_id: &str) -> bool {
         && !id.contains("instruct")
         && !id.contains("realtime")
         && !id.contains("audio")
+        // Not chat-completions models even though they match the prefixes above.
+        && !id.contains("codex")
+        && !id.contains("image")
+        && !id.contains("transcribe")
+        && !id.contains("moderation")
 }
 
 /// Fetch OpenAI models from API

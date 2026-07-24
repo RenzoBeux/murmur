@@ -1,3 +1,4 @@
+pub mod attachment;
 pub mod chat;
 pub mod meeting;
 pub mod setting;

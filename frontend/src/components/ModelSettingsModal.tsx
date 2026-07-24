@@ -18,7 +18,7 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Switch } from '@/components/ui/switch';
-import { Lock, Unlock, Eye, EyeOff, RefreshCw, CheckCircle2, XCircle, ChevronDown, ChevronUp, Download, ExternalLink, Check, ChevronsUpDown } from 'lucide-react';
+import { Lock, Unlock, Eye, EyeOff, RefreshCw, CheckCircle2, XCircle, ChevronDown, ChevronUp, Download, ExternalLink, Check, ChevronsUpDown, LogIn, LogOut, Loader2 } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   Command,
@@ -32,7 +32,7 @@ import { cn, isOllamaNotInstalledError } from '@/lib/utils';
 import { toast } from 'sonner';
 
 export interface ModelConfig {
-  provider: 'ollama' | 'groq' | 'claude' | 'openai' | 'openrouter' | 'builtin-ai' | 'custom-openai' | 'lmstudio';
+  provider: 'ollama' | 'groq' | 'claude' | 'openai' | 'openrouter' | 'builtin-ai' | 'custom-openai' | 'lmstudio' | 'chatgpt-subscription';
   model: string;
   whisperModel: string;
   apiKey?: string | null;
@@ -76,17 +76,26 @@ interface GroqModel {
   owned_by?: string;
 }
 
-// Fallback models for when API fetch fails or no API key provided
+// Fallback models for when API fetch fails or no API key provided.
+// Keep in sync with FALLBACK_MODELS in src-tauri/src/openai/openai.rs.
 const OPENAI_FALLBACK_MODELS = [
+  'gpt-5.1',
+  'gpt-5.1-chat-latest',
+  'gpt-5',
+  'gpt-5-mini',
+  'gpt-5-nano',
+  // gpt-4.1 family: 1M-token context window
+  'gpt-4.1',
+  'gpt-4.1-mini',
+  'gpt-4.1-nano',
   'gpt-4o',
   'gpt-4o-mini',
-  'gpt-4-turbo',
-  'gpt-4',
-  'gpt-3.5-turbo',
-  'o1',
-  'o1-mini',
+  'o4-mini',
   'o3',
   'o3-mini',
+  'o1',
+  'gpt-4-turbo',
+  'gpt-3.5-turbo',
 ];
 
 const CLAUDE_FALLBACK_MODELS = [
@@ -163,6 +172,67 @@ export function ModelSettingsModal({
   const [customTopP, setCustomTopP] = useState<string>(modelConfig.topP?.toString() || '');
   const [isCustomOpenAIAdvancedOpen, setIsCustomOpenAIAdvancedOpen] = useState<boolean>(false);
   const [isTestingConnection, setIsTestingConnection] = useState<boolean>(false);
+
+  // ChatGPT-subscription (OAuth) state
+  interface ChatGptStatus { signed_in: boolean; email?: string | null; plan?: string | null; account_id?: string | null; }
+  const CHATGPT_FALLBACK_MODELS = ['gpt-5.4', 'gpt-5.5', 'gpt-5.4-mini'];
+  const [chatgptStatus, setChatgptStatus] = useState<ChatGptStatus | null>(null);
+  const [chatgptBusy, setChatgptBusy] = useState<boolean>(false);
+  const [chatgptModels, setChatgptModels] = useState<string[]>([]);
+
+  const refreshChatgptStatus = async () => {
+    try {
+      const s = await invoke<ChatGptStatus>('chatgpt_status');
+      setChatgptStatus(s);
+    } catch {
+      setChatgptStatus({ signed_in: false });
+    }
+  };
+
+  // Model list comes from Codex's own auto-refreshed cache (no manual upkeep);
+  // falls back to a short built-in list if it can't be read.
+  const loadChatgptModels = async () => {
+    try {
+      const models = await invoke<string[]>('chatgpt_list_models');
+      if (Array.isArray(models) && models.length > 0) {
+        setChatgptModels(models);
+      }
+    } catch {
+      // keep whatever we have (fallback applied in modelOptions)
+    }
+  };
+
+  const handleChatgptSignIn = async () => {
+    setChatgptBusy(true);
+    try {
+      const s = await invoke<ChatGptStatus>('chatgpt_sign_in');
+      setChatgptStatus(s);
+      toast.success(`Conectado a ChatGPT${s?.email ? ` como ${s.email}` : ''}`);
+    } catch (e) {
+      toast.error(`No pude conectar con ChatGPT: ${e}`);
+    } finally {
+      setChatgptBusy(false);
+    }
+  };
+
+  const handleChatgptSignOut = async () => {
+    try {
+      await invoke('chatgpt_sign_out');
+      setChatgptStatus({ signed_in: false });
+      toast.success('Desconectado de ChatGPT');
+    } catch (e) {
+      toast.error(`${e}`);
+    }
+  };
+
+  // Load ChatGPT connection status + models on mount if it's the active provider.
+  useEffect(() => {
+    if (modelConfig.provider === 'chatgpt-subscription') {
+      refreshChatgptStatus();
+      loadChatgptModels();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelConfig.provider]);
 
   // Combobox state
   const [modelComboboxOpen, setModelComboboxOpen] = useState<boolean>(false);
@@ -258,6 +328,8 @@ export function ModelSettingsModal({
     'builtin-ai': builtinAiModels.map((m) => m.name),
     'custom-openai': customOpenAIModel ? [customOpenAIModel] : [], // User specifies model manually
     lmstudio: lmStudioModels.map((model) => model.name),
+    // Dynamic: read from Codex's model cache at runtime, fallback otherwise.
+    'chatgpt-subscription': chatgptModels.length > 0 ? chatgptModels : CHATGPT_FALLBACK_MODELS,
   };
 
   const requiresApiKey =
@@ -966,6 +1038,12 @@ export function ModelSettingsModal({
                   loadBuiltinAiModels();
                 }
 
+                // Refresh ChatGPT connection status + models when selected
+                if (provider === 'chatgpt-subscription') {
+                  refreshChatgptStatus();
+                  loadChatgptModels();
+                }
+
                 // Load custom OpenAI config when selected
                 if (provider === 'custom-openai') {
                   invoke<any>('api_get_custom_openai_config').then((config) => {
@@ -988,6 +1066,7 @@ export function ModelSettingsModal({
               </SelectTrigger>
               <SelectContent className="max-h-64 overflow-y-auto">
                 <SelectItem value="builtin-ai">Built-in AI (Offline, No API needed)</SelectItem>
+                <SelectItem value="chatgpt-subscription">ChatGPT (subscription, no API key)</SelectItem>
                 <SelectItem value="claude">Claude</SelectItem>
                 <SelectItem value="custom-openai">Custom Server (OpenAI)</SelectItem>
                 <SelectItem value="groq">Groq</SelectItem>
@@ -1226,6 +1305,48 @@ export function ModelSettingsModal({
                 </Button>
               </div>
             </div>
+          </div>
+        )}
+
+        {modelConfig.provider === 'chatgpt-subscription' && (
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Usa tu suscripción de ChatGPT (Plus/Pro) para generar resúmenes, sin API key.
+              Iniciás sesión una vez en el navegador y Murmur guarda el acceso localmente.
+            </p>
+            {chatgptStatus?.signed_in ? (
+              <div className="flex items-center justify-between rounded-md border p-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" />
+                  <span className="text-sm truncate">
+                    Conectado{chatgptStatus.email ? ` como ${chatgptStatus.email}` : ''}
+                    {chatgptStatus.plan ? ` · ${chatgptStatus.plan}` : ''}
+                  </span>
+                </div>
+                <Button variant="ghost" size="sm" onClick={handleChatgptSignOut}>
+                  <LogOut className="mr-1 h-4 w-4" />
+                  Desconectar
+                </Button>
+              </div>
+            ) : (
+              <Button onClick={handleChatgptSignIn} disabled={chatgptBusy} className="w-full">
+                {chatgptBusy ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Esperando el login en el navegador…
+                  </>
+                ) : (
+                  <>
+                    <LogIn className="mr-2 h-4 w-4" />
+                    Sign in with ChatGPT
+                  </>
+                )}
+              </Button>
+            )}
+            <p className="text-[11px] text-muted-foreground">
+              ⚠️ Usa el backend de Codex con tu cuenta de ChatGPT (fuera del uso previsto de la API de OpenAI).
+              Pensado para uso ocasional.
+            </p>
           </div>
         )}
 

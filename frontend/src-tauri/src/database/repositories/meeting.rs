@@ -141,8 +141,12 @@ impl MeetingsRepository {
     /// Retention sweep: permanently purge every trashed meeting whose
     /// `deleted_at` is older than `days` days, cascading to its children. Runs
     /// best-effort at startup. All purges share one transaction so a mid-sweep
-    /// failure leaves the trash exactly as it was. Returns the number purged.
-    pub async fn purge_trash_older_than(pool: &SqlitePool, days: i64) -> Result<u64, SqlxError> {
+    /// failure leaves the trash exactly as it was. Returns the purged meeting
+    /// ids so callers can clean up per-meeting files on disk (attachments).
+    pub async fn purge_trash_older_than(
+        pool: &SqlitePool,
+        days: i64,
+    ) -> Result<Vec<String>, SqlxError> {
         let cutoff = (Utc::now() - chrono::Duration::days(days)).naive_utc();
 
         let stale: Vec<(String,)> = sqlx::query_as(
@@ -153,16 +157,16 @@ impl MeetingsRepository {
         .await?;
 
         if stale.is_empty() {
-            return Ok(0);
+            return Ok(Vec::new());
         }
 
         let mut conn = pool.acquire().await?;
         let mut transaction = conn.begin().await?;
 
-        let mut purged: u64 = 0;
+        let mut purged: Vec<String> = Vec::new();
         for (id,) in &stale {
             match delete_meeting_with_transaction(&mut transaction, id).await {
-                Ok(true) => purged += 1,
+                Ok(true) => purged.push(id.clone()),
                 Ok(false) => {}
                 Err(e) => {
                     let _ = transaction.rollback().await;
@@ -173,10 +177,11 @@ impl MeetingsRepository {
         }
 
         transaction.commit().await?;
-        if purged > 0 {
+        if !purged.is_empty() {
             info!(
                 "Purged {} trashed meeting(s) past the {}-day retention window",
-                purged, days
+                purged.len(),
+                days
             );
         }
         Ok(purged)
@@ -514,6 +519,14 @@ async fn delete_meeting_with_transaction(
         .execute(&mut *transaction)
         .await?;
 
+    // 3c. Delete attachment rows (also FK-cascade-covered; explicit to match).
+    // The files on disk are removed by the callers' best-effort cleanup — see
+    // remove_meeting_attachment_files in api/attachments_api.rs.
+    sqlx::query("DELETE FROM meeting_attachments WHERE meeting_id = ?")
+        .bind(meeting_id)
+        .execute(&mut *transaction)
+        .await?;
+
     // 4. Finally, delete the meeting
     let result = sqlx::query("DELETE FROM meetings WHERE id = ?")
         .bind(meeting_id)
@@ -647,7 +660,11 @@ mod tests {
         let purged = MeetingsRepository::purge_trash_older_than(&pool, 30)
             .await
             .unwrap();
-        assert_eq!(purged, 1, "only the 40-day-old trash is purged");
+        assert_eq!(
+            purged,
+            vec!["m_old".to_string()],
+            "only the 40-day-old trash is purged"
+        );
 
         let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM meetings ORDER BY id")
             .fetch_all(&pool)
@@ -660,12 +677,10 @@ mod tests {
         );
 
         // Nothing left old enough → second sweep is a no-op.
-        assert_eq!(
-            MeetingsRepository::purge_trash_older_than(&pool, 30)
-                .await
-                .unwrap(),
-            0
-        );
+        assert!(MeetingsRepository::purge_trash_older_than(&pool, 30)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

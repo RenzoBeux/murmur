@@ -1,7 +1,7 @@
 {
     "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
     "productName": "Murmur",
-    "version": "0.8.1",
+    "version": "0.8.2",
     "identifier": "com.murmur.app",
     "build": {
         "frontendDist": "../out",
@@ -28,7 +28,7 @@
             "csp": {
                 "default-src": "'self'",
                 "style-src": "'self' 'unsafe-inline'",
-                "img-src": "'self' asset: https://asset.localhost data:",
+                "img-src": "'self' asset: http://asset.localhost https://asset.localhost data:",
                 "connect-src": "'self' http://localhost:11434 https://api.ollama.ai"
             },
             "assetProtocol": {

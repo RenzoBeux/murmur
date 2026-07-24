@@ -65,8 +65,13 @@ pub async fn initialize_database_on_startup(app: &AppHandle) -> Result<(), Strin
 
         // Empty the trash: permanently purge meetings soft-deleted more than 30 days
         // ago (cascading to their children). Best-effort — never blocks startup.
-        if let Err(e) = crate::database::repositories::meeting::MeetingsRepository::purge_trash_older_than(db_manager.pool(), 30).await {
-            log::warn!("Failed to purge old trashed meetings: {}", e);
+        match crate::database::repositories::meeting::MeetingsRepository::purge_trash_older_than(db_manager.pool(), 30).await {
+            Ok(purged_ids) => {
+                for id in &purged_ids {
+                    crate::api::attachments_api::remove_meeting_attachment_files(app, id);
+                }
+            }
+            Err(e) => log::warn!("Failed to purge old trashed meetings: {}", e),
         }
 
         app.manage(AppState { db_manager });

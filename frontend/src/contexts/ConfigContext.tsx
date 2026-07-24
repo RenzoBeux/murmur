@@ -382,6 +382,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     'builtin-ai': [],
     'custom-openai': [],
     lmstudio: [],
+    'chatgpt-subscription': ['gpt-5.4', 'gpt-5.5', 'gpt-5.4-mini'],
   };
 
   // Toggle confidence indicator with localStorage persistence

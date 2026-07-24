@@ -1,4 +1,5 @@
 pub mod api;
+pub mod attachments_api;
 pub mod chat_api;
 pub mod commands;
 

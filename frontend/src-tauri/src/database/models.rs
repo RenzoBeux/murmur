@@ -113,6 +113,19 @@ impl Setting {
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct MeetingAttachmentModel {
+    pub id: String,
+    pub meeting_id: String,
+    /// Original display name ("whiteboard.jpg").
+    pub file_name: String,
+    /// Collision-free filename inside {app_data_dir}/attachments/{meeting_id}/.
+    pub stored_name: String,
+    pub mime_type: String,
+    pub size_bytes: i64,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct ChatMessageModel {
     pub id: String,
     pub meeting_id: String,

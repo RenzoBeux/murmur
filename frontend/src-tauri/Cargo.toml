@@ -1,6 +1,6 @@
 [package]
 name = "murmur"
-version = "0.8.1"
+version = "0.8.2"
 description = "Privacy-first AI meeting assistant that runs entirely on your machine"
 authors = ["Renzo Beux", "Zackriya Solutions"]
 license = "MIT"
@@ -146,6 +146,9 @@ url = "2.5.0"
 # Integrity verification (SHA-256) for model/binary downloads
 sha2 = "0.10"
 hex = "0.4"
+
+# Image attachments encoded for vision-capable LLM providers
+base64 = "0.22"
 
 
 # System monitoring for resource management

@@ -7,11 +7,113 @@ use tracing::info;
 
 const REQUEST_TIMEOUT_DURATION: Duration = Duration::from_secs(300);
 
+/// An image attachment ready to send to a vision-capable model.
+#[derive(Debug, Clone)]
+pub struct ImageInput {
+    /// e.g. "image/png" — already validated against the supported set.
+    pub media_type: String,
+    /// Base64-encoded file bytes (no data: prefix).
+    pub base64_data: String,
+}
+
+// Request-side message content. Text-only messages must keep serializing as a
+// plain JSON string (untagged), so older OpenAI-compatible servers see exactly
+// the wire format they saw before multimodal support existed.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum RequestContent {
+    Text(String),
+    OpenAiParts(Vec<OpenAiContentPart>),
+    ClaudeParts(Vec<ClaudeContentPart>),
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OpenAiContentPart {
+    Text { text: String },
+    ImageUrl { image_url: OpenAiImageUrl },
+}
+
+#[derive(Debug, Serialize)]
+pub struct OpenAiImageUrl {
+    /// data:{media_type};base64,{data}
+    pub url: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum ClaudeContentPart {
+    Text { text: String },
+    Image { source: ClaudeImageSource },
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClaudeImageSource {
+    #[serde(rename = "type")]
+    pub source_type: String, // always "base64"
+    pub media_type: String,
+    pub data: String,
+}
+
 // Generic structure for OpenAI-compatible API chat messages
 #[derive(Debug, Serialize)]
 pub struct ChatMessage {
     pub role: String,
-    pub content: String,
+    pub content: RequestContent,
+}
+
+impl ChatMessage {
+    pub fn text(role: &str, content: impl Into<String>) -> Self {
+        Self {
+            role: role.to_string(),
+            content: RequestContent::Text(content.into()),
+        }
+    }
+}
+
+/// Build the user message for an OpenAI-compatible provider: plain text when
+/// there are no images, otherwise a parts array with the text first.
+fn openai_user_message(user_prompt: &str, images: &[ImageInput]) -> ChatMessage {
+    if images.is_empty() {
+        return ChatMessage::text("user", user_prompt);
+    }
+    let mut parts = vec![OpenAiContentPart::Text {
+        text: user_prompt.to_string(),
+    }];
+    parts.extend(images.iter().map(|img| OpenAiContentPart::ImageUrl {
+        image_url: OpenAiImageUrl {
+            url: format!("data:{};base64,{}", img.media_type, img.base64_data),
+        },
+    }));
+    ChatMessage {
+        role: "user".to_string(),
+        content: RequestContent::OpenAiParts(parts),
+    }
+}
+
+/// Build the user message for Claude: content blocks with images first (per
+/// Anthropic guidance) followed by the text.
+fn claude_user_message(user_prompt: &str, images: &[ImageInput]) -> ChatMessage {
+    if images.is_empty() {
+        return ChatMessage::text("user", user_prompt);
+    }
+    let mut parts: Vec<ClaudeContentPart> = images
+        .iter()
+        .map(|img| ClaudeContentPart::Image {
+            source: ClaudeImageSource {
+                source_type: "base64".to_string(),
+                media_type: img.media_type.clone(),
+                data: img.base64_data.clone(),
+            },
+        })
+        .collect();
+    parts.push(ClaudeContentPart::Text {
+        text: user_prompt.to_string(),
+    });
+    ChatMessage {
+        role: "user".to_string(),
+        content: RequestContent::ClaudeParts(parts),
+    }
 }
 
 // Generic structure for OpenAI-compatible API chat requests
@@ -72,9 +174,19 @@ pub struct ClaudeChatContent {
 #[derive(Debug, Serialize)]
 struct OllamaChatRequest {
     model: String,
-    messages: Vec<ChatMessage>,
+    messages: Vec<OllamaChatMessage>,
     stream: bool,
     options: OllamaOptions,
+}
+
+// Ollama's native multimodal shape: content stays a plain string and images
+// ride alongside as raw base64 (no data: prefix).
+#[derive(Debug, Serialize)]
+struct OllamaChatMessage {
+    role: String,
+    content: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    images: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -113,6 +225,9 @@ pub enum LLMProvider {
     BuiltInAI,
     CustomOpenAI,
     LMStudio,
+    /// "Sign in with ChatGPT" — uses the user's ChatGPT subscription via the
+    /// Codex responses endpoint instead of an API key. See openai::chatgpt_oauth.
+    ChatGptSubscription,
 }
 
 impl LLMProvider {
@@ -127,6 +242,7 @@ impl LLMProvider {
             "builtin-ai" | "local-llama" | "localllama" => Ok(Self::BuiltInAI),
             "custom-openai" => Ok(Self::CustomOpenAI),
             "lmstudio" | "lm-studio" | "lm_studio" => Ok(Self::LMStudio),
+            "chatgpt-subscription" | "chatgpt" => Ok(Self::ChatGptSubscription),
             _ => Err(format!("Unsupported LLM provider: {}", s)),
         }
     }
@@ -141,6 +257,8 @@ impl LLMProvider {
 /// * `api_key` - API key for the provider (not needed for Ollama)
 /// * `system_prompt` - System instructions for the LLM
 /// * `user_prompt` - User query/content to process
+/// * `images` - Image attachments for vision-capable models (empty slice for text-only
+///   calls; BuiltInAI cannot view images and proceeds text-only)
 /// * `ollama_endpoint` - Optional custom Ollama endpoint (defaults to localhost:11434)
 /// * `custom_openai_endpoint` - Optional custom OpenAI-compatible endpoint
 /// * `lmstudio_endpoint` - Optional custom LM Studio endpoint (defaults to localhost:1234)
@@ -159,6 +277,7 @@ pub async fn generate_summary(
     api_key: &str,
     system_prompt: &str,
     user_prompt: &str,
+    images: &[ImageInput],
     ollama_endpoint: Option<&str>,
     custom_openai_endpoint: Option<&str>,
     lmstudio_endpoint: Option<&str>,
@@ -177,6 +296,12 @@ pub async fn generate_summary(
 
     // Handle BuiltInAI provider separately (uses local sidecar, no HTTP API)
     if provider == &LLMProvider::BuiltInAI {
+        if !images.is_empty() {
+            tracing::warn!(
+                "BuiltInAI cannot view images — proceeding text-only ({} image(s) skipped)",
+                images.len()
+            );
+        }
         let app_data_dir = app_data_dir
             .ok_or_else(|| "app_data_dir is required for BuiltInAI provider".to_string())?;
 
@@ -191,6 +316,29 @@ pub async fn generate_summary(
         .map_err(|e| e.to_string());
     }
 
+    // ChatGPT subscription talks the Codex "responses" protocol (SSE, different
+    // endpoint + auth), not chat/completions — handle it in its own module. Auth
+    // (token + refresh) lives in a file under app_data_dir, so no api_key needed.
+    if provider == &LLMProvider::ChatGptSubscription {
+        if !images.is_empty() {
+            tracing::warn!(
+                "ChatGPT (subscription) is text-only here — proceeding without {} image(s)",
+                images.len()
+            );
+        }
+        let app_data_dir = app_data_dir
+            .ok_or_else(|| "app_data_dir is required for ChatGPT subscription".to_string())?;
+        return crate::openai::chatgpt_oauth::generate_via_codex(
+            client,
+            model_name,
+            system_prompt,
+            user_prompt,
+            app_data_dir,
+            cancellation_token,
+        )
+        .await;
+    }
+
     // Ollama uses its OWN native /api/chat path so we can send options.num_ctx (the
     // OpenAI-compat shim below cannot, which is why long meetings were silently
     // truncated to Ollama's ~4k default).
@@ -200,6 +348,7 @@ pub async fn generate_summary(
             model_name,
             system_prompt,
             user_prompt,
+            images,
             ollama_endpoint,
             temperature,
             cancellation_token,
@@ -273,6 +422,10 @@ pub async fn generate_summary(
             // This case is handled earlier with early returns
             unreachable!("BuiltInAI is handled before this match statement")
         }
+        LLMProvider::ChatGptSubscription => {
+            // Handled earlier with an early return (Codex responses protocol)
+            unreachable!("ChatGptSubscription is handled before this match statement")
+        }
     };
 
     // Add authorization header for non-Claude providers
@@ -303,14 +456,8 @@ pub async fn generate_summary(
         serde_json::json!(ChatRequest {
             model: model_name.to_string(),
             messages: vec![
-                ChatMessage {
-                    role: "system".to_string(),
-                    content: system_prompt.to_string(),
-                },
-                ChatMessage {
-                    role: "user".to_string(),
-                    content: user_prompt.to_string(),
-                }
+                ChatMessage::text("system", system_prompt),
+                openai_user_message(user_prompt, images),
             ],
             max_tokens: max_tokens_val,
             temperature: temperature_val,
@@ -323,10 +470,7 @@ pub async fn generate_summary(
             // Was hardcoded to 2048, which cut long summaries and the translation pass
             // mid-output. Default to 8192; a user-provided max_tokens overrides.
             max_tokens: max_tokens.unwrap_or(8192),
-            messages: vec![ChatMessage {
-                role: "user".to_string(),
-                content: user_prompt.to_string(),
-            }]
+            messages: vec![claude_user_message(user_prompt, images)]
         })
     };
 
@@ -423,6 +567,7 @@ async fn generate_ollama_native(
     model_name: &str,
     system_prompt: &str,
     user_prompt: &str,
+    images: &[ImageInput],
     ollama_endpoint: Option<&str>,
     temperature: Option<f32>,
     cancellation_token: Option<&CancellationToken>,
@@ -445,13 +590,15 @@ async fn generate_ollama_native(
     let request_body = OllamaChatRequest {
         model: model_name.to_string(),
         messages: vec![
-            ChatMessage {
+            OllamaChatMessage {
                 role: "system".to_string(),
                 content: system_prompt.to_string(),
+                images: Vec::new(),
             },
-            ChatMessage {
+            OllamaChatMessage {
                 role: "user".to_string(),
                 content: user_prompt.to_string(),
+                images: images.iter().map(|img| img.base64_data.clone()).collect(),
             },
         ],
         stream: false,
@@ -539,6 +686,7 @@ fn provider_name(provider: &LLMProvider) -> &str {
         LLMProvider::OpenRouter => "OpenRouter",
         LLMProvider::CustomOpenAI => "Custom OpenAI",
         LLMProvider::LMStudio => "LM Studio",
+        LLMProvider::ChatGptSubscription => "ChatGPT (subscription)",
     }
 }
 
@@ -550,9 +698,10 @@ mod tests {
     fn ollama_request_serializes_num_ctx_and_num_predict() {
         let req = OllamaChatRequest {
             model: "llama3.2".to_string(),
-            messages: vec![ChatMessage {
+            messages: vec![OllamaChatMessage {
                 role: "user".to_string(),
                 content: "hi".to_string(),
+                images: Vec::new(),
             }],
             stream: false,
             options: OllamaOptions {
@@ -565,6 +714,58 @@ mod tests {
         assert_eq!(v["options"]["num_ctx"], 32768);
         assert_eq!(v["options"]["num_predict"], -1);
         assert_eq!(v["stream"], false);
+        // Text-only message must not gain an `images` key (older Ollama versions).
+        assert!(v["messages"][0].get("images").is_none());
+    }
+
+    #[test]
+    fn text_only_message_serializes_content_as_plain_string() {
+        let msg = ChatMessage::text("user", "hello");
+        let v = serde_json::to_value(&msg).unwrap();
+        assert_eq!(v["content"], "hello");
+    }
+
+    #[test]
+    fn openai_message_with_images_serializes_parts() {
+        let images = vec![ImageInput {
+            media_type: "image/png".to_string(),
+            base64_data: "AAAA".to_string(),
+        }];
+        let v = serde_json::to_value(openai_user_message("look", &images)).unwrap();
+        assert_eq!(v["content"][0]["type"], "text");
+        assert_eq!(v["content"][0]["text"], "look");
+        assert_eq!(v["content"][1]["type"], "image_url");
+        assert_eq!(
+            v["content"][1]["image_url"]["url"],
+            "data:image/png;base64,AAAA"
+        );
+    }
+
+    #[test]
+    fn claude_message_with_images_serializes_source_blocks() {
+        let images = vec![ImageInput {
+            media_type: "image/jpeg".to_string(),
+            base64_data: "BBBB".to_string(),
+        }];
+        let v = serde_json::to_value(claude_user_message("look", &images)).unwrap();
+        assert_eq!(v["content"][0]["type"], "image");
+        assert_eq!(v["content"][0]["source"]["type"], "base64");
+        assert_eq!(v["content"][0]["source"]["media_type"], "image/jpeg");
+        assert_eq!(v["content"][0]["source"]["data"], "BBBB");
+        assert_eq!(v["content"][1]["type"], "text");
+        assert_eq!(v["content"][1]["text"], "look");
+    }
+
+    #[test]
+    fn ollama_message_with_images_serializes_flat_base64() {
+        let msg = OllamaChatMessage {
+            role: "user".to_string(),
+            content: "look".to_string(),
+            images: vec!["CCCC".to_string()],
+        };
+        let v = serde_json::to_value(&msg).unwrap();
+        assert_eq!(v["content"], "look");
+        assert_eq!(v["images"][0], "CCCC");
     }
 
     #[test]

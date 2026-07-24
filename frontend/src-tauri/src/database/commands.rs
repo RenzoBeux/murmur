@@ -169,8 +169,13 @@ pub async fn import_and_initialize_database(
     }
 
     // Empty the trash: purge meetings soft-deleted more than 30 days ago (best-effort).
-    if let Err(e) = super::repositories::meeting::MeetingsRepository::purge_trash_older_than(db_manager.pool(), 30).await {
-        error!("Failed to purge old trashed meetings: {}", e);
+    match super::repositories::meeting::MeetingsRepository::purge_trash_older_than(db_manager.pool(), 30).await {
+        Ok(purged_ids) => {
+            for id in &purged_ids {
+                crate::api::attachments_api::remove_meeting_attachment_files(&app, id);
+            }
+        }
+        Err(e) => error!("Failed to purge old trashed meetings: {}", e),
     }
 
     // Update app state with the new manager
@@ -206,8 +211,13 @@ pub async fn initialize_fresh_database(app: AppHandle) -> Result<(), String> {
     }
 
     // Empty the trash: purge meetings soft-deleted more than 30 days ago (best-effort).
-    if let Err(e) = super::repositories::meeting::MeetingsRepository::purge_trash_older_than(db_manager.pool(), 30).await {
-        error!("Failed to purge old trashed meetings: {}", e);
+    match super::repositories::meeting::MeetingsRepository::purge_trash_older_than(db_manager.pool(), 30).await {
+        Ok(purged_ids) => {
+            for id in &purged_ids {
+                crate::api::attachments_api::remove_meeting_attachment_files(&app, id);
+            }
+        }
+        Err(e) => error!("Failed to purge old trashed meetings: {}", e),
     }
 
     // Update app state with the new manager

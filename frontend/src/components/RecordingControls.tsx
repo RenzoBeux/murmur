@@ -10,7 +10,7 @@ import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 
 interface RecordingControlsProps {
   isRecording: boolean;
@@ -172,31 +172,41 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       onRecordingStop(true);
     } catch (error) {
       console.error('Failed to stop recording:', error);
-      if (error instanceof Error) {
-        console.error('Error details:', {
-          message: error.message,
-          name: error.name,
-          stack: error.stack,
-        });
-        if (error.message.includes('No recording in progress')) {
-          return;
-        }
-      } else if (typeof error === 'string' && error.includes('No recording in progress')) {
-        return;
-      } else if (error && typeof error === 'object' && 'toString' in error) {
-        if (error.toString().includes('No recording in progress')) {
-          return;
-        }
-      }
       setIsProcessing(false);
-      // Even if the stop invoke rejected (e.g. its long timeout), attempt to save rather
-      // than discard. If Rust already persisted the meeting the save path reconciles via
-      // the returned meeting_id; otherwise it falls back to the frontend transcript state.
+      const errorText = error instanceof Error ? error.message : String(error);
+      if (errorText.includes('No recording in progress')) {
+        return;
+      }
+      // The stop invoke failed. Only run the post-stop save flow if the backend
+      // actually stopped: running it against a still-live recording saves a partial
+      // duplicate meeting, wipes the live transcript view, and navigates away while
+      // audio keeps recording — with no way left to stop it.
+      let backendStillRecording = false;
+      try {
+        backendStillRecording = await invoke<boolean>('is_recording');
+      } catch {
+        // State unknown — fall through to the save attempt rather than risk
+        // discarding a recording that did finish.
+      }
+      if (backendStillRecording) {
+        // Lift the page out of the "Stopping…" state the stop click put it in;
+        // the backend is still recording, so that is what the UI must show.
+        recordingState.setStatus(RecordingStatus.RECORDING);
+        toast.error('Could not stop the recording', {
+          id: 'stop-recording-failed',
+          description: `${errorText}. The recording is still running — press Stop to try again.`,
+          duration: 10000,
+        });
+        return;
+      }
+      // Backend confirms stopped: salvage the meeting. If Rust already persisted it
+      // the save path reconciles via the returned meeting_id; otherwise it falls
+      // back to the frontend transcript state.
       onRecordingStop(true);
     } finally {
       setIsStopping(false);
     }
-  }, [onRecordingStop]);
+  }, [onRecordingStop, recordingState]);
 
   const handleStopRecording = useCallback(async () => {
     console.log('handleStopRecording called - isRecording:', isRecording, 'isStarting:', isStarting, 'isStopping:', isStopping);

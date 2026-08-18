@@ -139,11 +139,23 @@ fn make_error_callback<R: Runtime>(
                             .to_string()
                     })
                     .unwrap_or_default();
-                if let Err(e) = stop_recording(app.clone(), RecordingArgs { save_path }).await {
-                    error!("Fatal-error finalize failed: {}", e);
+                match stop_recording(app.clone(), RecordingArgs { save_path }).await {
+                    Ok(()) => {
+                        // Drive the frontend's post-processing/navigation + return UI to idle.
+                        let _ = app.emit("recording-stop-complete", true);
+                    }
+                    Err(e) => {
+                        error!("Fatal-error finalize failed: {}", e);
+                        // Do NOT emit recording-stop-complete: the backend may still be
+                        // recording, and the frontend's post-stop flow would save a partial
+                        // duplicate meeting and wipe the live transcript view. Surface the
+                        // failure instead.
+                        let _ = app.emit(
+                            "recording-error",
+                            format!("Recording could not be finalized after a fatal error: {}", e),
+                        );
+                    }
                 }
-                // Drive the frontend's post-processing/navigation + return UI to idle.
-                let _ = app.emit("recording-stop-complete", true);
             });
         }
     }
@@ -1008,31 +1020,52 @@ pub async fn stop_recording<R: Runtime>(
         global_manager.take()
     };
 
-    let stop_result = if let Some(mut manager) = manager_for_flush {
+    let stream_stop_error = if let Some(mut manager) = manager_for_flush {
         // Use FORCE FLUSH to immediately process all accumulated audio - eliminates 30s delay!
         info!("🚀 Using FORCE FLUSH to eliminate pipeline accumulation delays");
-        let result = manager.stop_streams_and_force_flush().await;
-        match &result {
-            // On success, return the manager to the global for the duration of the drain.
-            Ok(_) => {
-                *RECORDING_MANAGER.lock().unwrap() = Some(manager);
-            }
-            // On failure we bail out below; drop the manager rather than orphan it.
-            Err(_) => {}
-        }
-        result
+        // Bound the teardown: a hung device/pipeline stop must not wedge the whole stop
+        // command — the UI has no other way to end the session.
+        let result = match tokio::time::timeout(
+            tokio::time::Duration::from_secs(60),
+            manager.stop_streams_and_force_flush(),
+        )
+        .await
+        {
+            Ok(inner) => inner.map_err(|e| e.to_string()),
+            Err(_) => Err("stream teardown timed out after 60s".to_string()),
+        };
+        // Return the manager to the global in BOTH cases: the transcript-update listener
+        // reaches it there during the Step 2 drain, and Step 4 saves the meeting from it.
+        // Dropping it on failure used to lose the whole in-progress meeting while
+        // IS_RECORDING stayed true (zombie session).
+        *RECORDING_MANAGER.lock().unwrap() = Some(manager);
+        result.err()
     } else {
         warn!("No recording manager found to stop");
-        Ok(())
+        None
     };
 
-    match stop_result {
-        Ok(_) => {
+    match &stream_stop_error {
+        None => {
             info!("✅ Audio streams stopped successfully - no more chunks will be created");
         }
-        Err(e) => {
-            error!("❌ Failed to stop audio streams: {}", e);
-            return Err(format!("Failed to stop audio streams: {}", e));
+        Some(e) => {
+            // Do NOT bail out here. The old early return left IS_RECORDING true with live
+            // streams and no recovery path — the frontend then ran its post-stop save flow
+            // against a still-recording backend (partial duplicate meeting + cleared live
+            // transcript). Continue best-effort shutdown so the session always converges
+            // to "stopped" and the meeting is still saved.
+            error!(
+                "❌ Failed to stop audio streams cleanly (continuing shutdown): {}",
+                e
+            );
+            let _ = app.emit(
+                "recording-error",
+                format!(
+                    "Audio capture did not stop cleanly ({}). Finalizing the recording anyway.",
+                    e
+                ),
+            );
         }
     }
 

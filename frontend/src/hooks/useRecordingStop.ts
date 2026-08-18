@@ -7,6 +7,7 @@ import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import { storageService } from '@/services/storageService';
 import { transcriptService } from '@/services/transcriptService';
+import { recordingService } from '@/services/recordingService';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
@@ -130,6 +131,29 @@ export function useRecordingStop(
       return;
     }
     stopInProgressRef.current = true;
+
+    // HARD GUARD: never run the post-stop save flow while the backend is still
+    // recording. stop_recording is invoked by our callers, not here — if it failed
+    // or never ran, saving now would create a partial duplicate meeting, wipe the
+    // live transcript view (clearTranscripts below), and navigate away while audio
+    // keeps recording.
+    try {
+      if (await recordingService.isRecording()) {
+        console.error('handleRecordingStop: backend still recording — aborting post-stop flow');
+        toast.error('Recording is still in progress', {
+          id: 'stop-still-recording',
+          description:
+            'The recording could not be stopped, so nothing was saved yet. Press Stop to try again.',
+        });
+        setStatus(RecordingStatus.RECORDING);
+        stopInProgressRef.current = false;
+        return;
+      }
+    } catch (stateError) {
+      // Can't query backend state — continue with the save path (losing a
+      // stop-time save is worse than a rare duplicate).
+      console.warn('handleRecordingStop: could not verify backend state:', stateError);
+    }
 
     // Set status to STOPPING immediately
     setStatus(RecordingStatus.STOPPING);

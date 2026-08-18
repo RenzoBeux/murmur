@@ -1,9 +1,11 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useRouter } from 'next/navigation';
 import { Calendar, Clock, ListVideo, Search, X } from 'lucide-react';
+import { MeetingActionsMenu } from '@/components/MeetingActions/MeetingActionsMenu';
+import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { groupMeetingsByDate } from '@/lib/meetingGrouping';
 
 interface MeetingRow {
@@ -44,22 +46,53 @@ function fmtTime(s?: string): string {
 
 export default function MeetingsPage() {
   const router = useRouter();
+  const { refetchMeetings } = useSidebar();
   const [meetings, setMeetings] = useState<MeetingRow[] | null>(null);
   const [query, setQuery] = useState('');
   // Transcript-content matches from the backend FTS index (id -> snippet).
   const [contentMatches, setContentMatches] = useState<Map<string, string>>(new Map());
   const [isSearching, setIsSearching] = useState(false);
 
-  useEffect(() => {
-    invoke<Array<{ id: string; title: string; created_at: string }>>('api_get_meetings')
-      .then((rows) =>
-        setMeetings(rows.map((r) => ({ id: r.id, title: r.title, createdAt: r.created_at }))),
-      )
-      .catch((e) => {
-        console.error('Failed to load meetings:', e);
-        setMeetings([]);
-      });
+  const loadMeetings = useCallback(async () => {
+    try {
+      const rows = await invoke<Array<{ id: string; title: string; created_at: string }>>(
+        'api_get_meetings',
+      );
+      setMeetings(rows.map((r) => ({ id: r.id, title: r.title, createdAt: r.created_at })));
+    } catch (e) {
+      console.error('Failed to load meetings:', e);
+      setMeetings([]);
+    }
   }, []);
+
+  useEffect(() => {
+    loadMeetings();
+  }, [loadMeetings]);
+
+  // Rename/trash mutate this page's list optimistically; the sidebar keeps its
+  // own copy of the meetings, so it needs a refetch to stay in sync.
+  const handleRenamed = useCallback(
+    (meetingId: string, newTitle: string) => {
+      setMeetings((prev) =>
+        prev ? prev.map((m) => (m.id === meetingId ? { ...m, title: newTitle } : m)) : prev,
+      );
+      refetchMeetings();
+    },
+    [refetchMeetings],
+  );
+
+  const handleTrashed = useCallback(
+    (meetingId: string) => {
+      setMeetings((prev) => (prev ? prev.filter((m) => m.id !== meetingId) : prev));
+      refetchMeetings();
+    },
+    [refetchMeetings],
+  );
+
+  const handleRestored = useCallback(async () => {
+    await loadMeetings();
+    await refetchMeetings();
+  }, [loadMeetings, refetchMeetings]);
 
   // Debounced transcript search. A monotonically-increasing seq guards against
   // out-of-order responses clobbering the latest query's results.
@@ -177,7 +210,13 @@ export default function MeetingsPage() {
               <ul className="space-y-1.5">
                 {hits!.map((m) => (
                   <li key={m.id}>
-                    <MeetingCard m={m} onClick={() => router.push(`/meeting-details?id=${m.id}`)} />
+                    <MeetingCard
+                      m={m}
+                      onClick={() => router.push(`/meeting-details?id=${m.id}`)}
+                      onRenamed={handleRenamed}
+                      onTrashed={handleTrashed}
+                      onRestored={handleRestored}
+                    />
                   </li>
                 ))}
               </ul>
@@ -192,7 +231,13 @@ export default function MeetingsPage() {
                   <ul className="mt-1 space-y-1.5">
                     {group.items.map((m) => (
                       <li key={m.id}>
-                        <MeetingCard m={m} onClick={() => router.push(`/meeting-details?id=${m.id}`)} />
+                        <MeetingCard
+                          m={m}
+                          onClick={() => router.push(`/meeting-details?id=${m.id}`)}
+                          onRenamed={handleRenamed}
+                          onTrashed={handleTrashed}
+                          onRestored={handleRestored}
+                        />
                       </li>
                     ))}
                   </ul>
@@ -206,32 +251,54 @@ export default function MeetingsPage() {
   );
 }
 
-function MeetingCard({ m, onClick }: { m: SearchHit; onClick: () => void }) {
+function MeetingCard({
+  m,
+  onClick,
+  onRenamed,
+  onTrashed,
+  onRestored,
+}: {
+  m: SearchHit;
+  onClick: () => void;
+  onRenamed: (meetingId: string, newTitle: string) => void;
+  onTrashed: (meetingId: string) => void;
+  onRestored: () => void;
+}) {
   return (
-    <button
-      onClick={onClick}
-      className="w-full text-left rounded-lg border border-border bg-card hover:bg-accent transition-colors p-4"
-    >
-      <div className="flex items-center gap-4">
-        <div className="flex-1 min-w-0">
-          <p className="font-medium truncate">{m.title}</p>
+    // The card body is the button and the actions menu sits beside it — a
+    // button nested inside a button would be invalid markup.
+    <div className="group relative rounded-lg border border-border bg-card hover:bg-accent transition-colors">
+      <button onClick={onClick} className="w-full text-left p-4 pr-12">
+        <div className="flex items-center gap-4">
+          <div className="flex-1 min-w-0">
+            <p className="font-medium truncate">{m.title}</p>
+          </div>
+          <div className="shrink-0 flex items-center gap-4 text-xs text-muted-foreground">
+            <span className="flex items-center gap-1.5">
+              <Calendar className="w-3.5 h-3.5" />
+              {fmtDate(m.createdAt)}
+            </span>
+            <span className="flex items-center gap-1.5">
+              <Clock className="w-3.5 h-3.5" />
+              {fmtTime(m.createdAt)}
+            </span>
+          </div>
         </div>
-        <div className="shrink-0 flex items-center gap-4 text-xs text-muted-foreground">
-          <span className="flex items-center gap-1.5">
-            <Calendar className="w-3.5 h-3.5" />
-            {fmtDate(m.createdAt)}
-          </span>
-          <span className="flex items-center gap-1.5">
-            <Clock className="w-3.5 h-3.5" />
-            {fmtTime(m.createdAt)}
-          </span>
-        </div>
+        {m.matchContext && (
+          <div className="mt-2 text-xs text-muted-foreground bg-warning/10 border border-warning/20 rounded p-2 line-clamp-2">
+            <span className="font-medium text-warning">Match:</span> {m.matchContext}
+          </div>
+        )}
+      </button>
+      <div className="absolute right-2 top-3.5">
+        <MeetingActionsMenu
+          meetingId={m.id}
+          title={m.title}
+          onRenamed={(newTitle) => onRenamed(m.id, newTitle)}
+          onTrashed={() => onTrashed(m.id)}
+          onRestored={onRestored}
+        />
       </div>
-      {m.matchContext && (
-        <div className="mt-2 text-xs text-muted-foreground bg-warning/10 border border-warning/20 rounded p-2 line-clamp-2">
-          <span className="font-medium text-warning">Match:</span> {m.matchContext}
-        </div>
-      )}
-    </button>
+    </div>
   );
 }

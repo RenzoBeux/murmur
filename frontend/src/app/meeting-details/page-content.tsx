@@ -10,8 +10,14 @@ import { ChatPanel } from '@/components/MeetingDetails/ChatPanel';
 import { AttachmentsPanel } from '@/components/MeetingDetails/AttachmentsPanel';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { FileText, MessageSquare, Paperclip } from 'lucide-react';
+import { FileText, MessageSquare, Paperclip, Pencil } from 'lucide-react';
 import { FileDropClaim, useFileDropTarget } from '@/contexts/FileDropContext';
+import {
+  MeetingActionsDropdown,
+  useMeetingActions,
+} from '@/components/MeetingActions/MeetingActionsMenu';
+import { useSidebar } from '@/components/Sidebar/SidebarProvider';
+import { useRouter } from 'next/navigation';
 
 // Custom hooks
 import { useAttachments } from '@/hooks/meeting-details/useAttachments';
@@ -193,6 +199,23 @@ export default function PageContent({
     meeting,
   });
 
+  // Rename / move-to-trash for this meeting. Renaming only touches local state
+  // (title + sidebar) on purpose: a full refetch would unmount this subtree and
+  // any dialog open inside it.
+  const router = useRouter();
+  const { setCurrentMeeting, refetchMeetings } = useSidebar();
+  const meetingActions = useMeetingActions({
+    meetingId: meeting.id,
+    title: meetingData.meetingTitle,
+    onRenamed: meetingData.updateMeetingTitle,
+    onTrashed: () => {
+      setCurrentMeeting({ id: 'intro-call', title: '+ New Call' });
+      refetchMeetings();
+      router.push('/');
+    },
+    onRestored: refetchMeetings,
+  });
+
   // Auto-generate summary when flag is set
   useEffect(() => {
     let cancelled = false;
@@ -227,6 +250,35 @@ export default function PageContent({
       transition={{ duration: 0.3, ease: 'easeOut' }}
       className="flex flex-col h-[calc(100vh-var(--titlebar-height))] bg-background"
     >
+      {/* Meeting header: rename by clicking the title, plus the actions menu */}
+      <div className="flex items-center gap-2 border-b border-border px-4 py-2">
+        <button
+          onClick={meetingActions.openRename}
+          className="group flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left hover:bg-accent"
+          title="Rename meeting"
+        >
+          <h1 className="truncate text-base font-semibold">{meetingData.meetingTitle}</h1>
+          <Pencil className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+        </button>
+        {meeting.created_at && (
+          <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
+            {new Date(meeting.created_at).toLocaleString(undefined, {
+              month: 'short',
+              day: 'numeric',
+              year: 'numeric',
+              hour: 'numeric',
+              minute: '2-digit',
+            })}
+          </span>
+        )}
+        <div className="ml-auto shrink-0">
+          <MeetingActionsDropdown
+            onRename={meetingActions.openRename}
+            onTrash={meetingActions.openTrash}
+          />
+        </div>
+      </div>
+      {meetingActions.dialogs}
       <div className="flex flex-1 overflow-hidden">
         <TranscriptPanel
           transcripts={meetingData.transcripts}

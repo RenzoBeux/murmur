@@ -1,38 +1,27 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, PanelLeftClose, PanelLeftOpen, Calendar, Home, Trash2, Mic, Square, Plus, Pencil, NotebookPen, Upload, List } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Settings, PanelLeftClose, PanelLeftOpen, Calendar, Home, Trash2, Mic, Square, Plus, NotebookPen, Upload, List } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { getVersion } from '@tauri-apps/api/app';
 import { useSidebar } from './SidebarProvider';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
-import { ConfirmationModal } from '../ConfirmationModal/confirmation-modal';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { SettingTabs } from '../SettingTabs';
 import { TranscriptModelProps } from '@/components/TranscriptSettings';
 import { invoke } from '@tauri-apps/api/core';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { toast } from 'sonner';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useImportDialog } from '@/contexts/ImportDialogContext';
 import { useConfig } from '@/contexts/ConfigContext';
 import { GlobalEgressIndicator } from '@/components/GlobalEgressIndicator';
+import { MeetingActionsMenu } from '@/components/MeetingActions/MeetingActionsMenu';
 import { groupMeetingsByDate } from '@/lib/meetingGrouping';
 
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogTitle,
-} from "@/components/ui/dialog"
-import { VisuallyHidden } from "@/components/ui/visually-hidden"
-
 import { MessageToast } from '../MessageToast';
-import { Button } from '../ui/button';
 import Info from '../Info';
 import { ComplianceNotification } from '../ComplianceNotification';
-import { Input } from '../ui/input';
 
 interface SidebarItem {
   id: string;
@@ -54,7 +43,6 @@ const Sidebar: React.FC = () => {
     isCollapsed,
     toggleCollapse,
     handleRecordingToggle,
-    meetings,
     setMeetings,
     refetchMeetings
   } = useSidebar();
@@ -78,14 +66,6 @@ const Sidebar: React.FC = () => {
   });
   const [settingsSaveSuccess, setSettingsSaveSuccess] = useState<boolean | null>(null);
 
-  // State for edit modal
-  const [editModalState, setEditModalState] = useState<{ isOpen: boolean; meetingId: string | null; currentTitle: string }>({
-    isOpen: false,
-    meetingId: null,
-    currentTitle: ''
-  });
-  const [editingTitle, setEditingTitle] = useState<string>('');
-
   // Ensure 'meetings' folder is always expanded
   useEffect(() => {
     if (!expandedFolders.has('meetings')) {
@@ -103,8 +83,6 @@ const Sidebar: React.FC = () => {
   //   }
   // }, [settingsSaveSuccess]);
 
-
-  const [deleteModalState, setDeleteModalState] = useState<{ isOpen: boolean; itemId: string | null }>({ isOpen: false, itemId: null });
 
   const [appVersion, setAppVersion] = useState<string>('');
   useEffect(() => {
@@ -226,120 +204,28 @@ const Sidebar: React.FC = () => {
     }
   };
 
-  const handleDelete = async (itemId: string) => {
-    const deleted = meetings.find((m: CurrentMeeting) => m.id === itemId);
+  // The rename/trash calls themselves live in MeetingActionsMenu; the sidebar
+  // only reconciles its own list afterwards. Both use functional updaters so
+  // overlapping in-flight actions build on the latest list instead of a stale
+  // render-time snapshot (which could resurrect a peer).
+  const handleMeetingRenamed = (meetingId: string, newTitle: string) => {
+    setMeetings((prev) =>
+      prev.map((m: CurrentMeeting) => (m.id === meetingId ? { ...m, title: newTitle } : m))
+    );
 
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      // Soft-delete: the meeting moves to the trash (its transcripts/summary stay
-      // intact) and is auto-purged after 30 days. Fully reversible via Undo.
-      await invoke('api_delete_meeting', {
-        meetingId: itemId,
-      });
-
-      // Optimistically remove it from the sidebar list. Use a functional
-      // updater so overlapping in-flight deletes each build on the latest list
-      // instead of a stale render-time snapshot (which could resurrect a peer).
-      setMeetings((prev) => prev.filter((m: CurrentMeeting) => m.id !== itemId));
-
-      // If deleting the active meeting, navigate to home.
-      if (currentMeeting?.id === itemId) {
-        setCurrentMeeting({ id: 'intro-call', title: '+ New Call' });
-        router.push('/');
-      }
-
-      // Offer an Undo that restores the meeting from the trash.
-      toast.success("Meeting moved to trash", {
-        description: `"${deleted?.title ?? 'Meeting'}" — kept for 30 days, then removed`,
-        action: {
-          label: "Undo",
-          onClick: async () => {
-            try {
-              const { invoke } = await import('@tauri-apps/api/core');
-              await invoke('api_restore_meeting', { meetingId: itemId });
-              await refetchMeetings();
-              toast.success("Meeting restored");
-            } catch (error) {
-              console.error('Failed to restore meeting:', error);
-              toast.error("Failed to restore meeting", {
-                description: error instanceof Error ? error.message : String(error)
-              });
-            }
-          },
-        },
-      });
-    } catch (error) {
-      console.error('Failed to delete meeting:', error);
-      toast.error("Failed to delete meeting", {
-        description: error instanceof Error ? error.message : String(error)
-      });
+    if (currentMeeting?.id === meetingId) {
+      setCurrentMeeting({ id: meetingId, title: newTitle });
     }
   };
 
-  const handleDeleteConfirm = () => {
-    if (deleteModalState.itemId) {
-      handleDelete(deleteModalState.itemId);
+  const handleMeetingTrashed = (meetingId: string) => {
+    setMeetings((prev) => prev.filter((m: CurrentMeeting) => m.id !== meetingId));
+
+    // If the active meeting was trashed, navigate home.
+    if (currentMeeting?.id === meetingId) {
+      setCurrentMeeting({ id: 'intro-call', title: '+ New Call' });
+      router.push('/');
     }
-    setDeleteModalState({ isOpen: false, itemId: null });
-  };
-
-  // Handle modal editing of meeting names
-  const handleEditStart = (meetingId: string, currentTitle: string) => {
-    setEditModalState({
-      isOpen: true,
-      meetingId: meetingId,
-      currentTitle: currentTitle
-    });
-    setEditingTitle(currentTitle);
-  };
-
-  const handleEditConfirm = async () => {
-    const newTitle = editingTitle.trim();
-    const meetingId = editModalState.meetingId;
-
-    if (!meetingId) return;
-
-    // Prevent empty titles
-    if (!newTitle) {
-      toast.error("Meeting title cannot be empty");
-      return;
-    }
-
-    try {
-      await invoke('api_save_meeting_title', {
-        meetingId: meetingId,
-        title: newTitle,
-      });
-
-      // Update local state via a functional updater (avoids clobbering a
-      // concurrent delete/edit with a stale render-time snapshot).
-      setMeetings((prev) =>
-        prev.map((m: CurrentMeeting) =>
-          m.id === meetingId ? { ...m, title: newTitle } : m
-        )
-      );
-
-      // Update current meeting if it's the one being edited
-      if (currentMeeting?.id === meetingId) {
-        setCurrentMeeting({ id: meetingId, title: newTitle });
-      }
-
-      toast.success("Meeting title updated successfully");
-
-      // Close modal and reset state
-      setEditModalState({ isOpen: false, meetingId: null, currentTitle: '' });
-      setEditingTitle('');
-    } catch (error) {
-      console.error('Failed to update meeting title:', error);
-      toast.error("Failed to update meeting title", {
-        description: error instanceof Error ? error.message : String(error)
-      });
-    }
-  };
-
-  const handleEditCancel = () => {
-    setEditModalState({ isOpen: false, meetingId: null, currentTitle: '' });
-    setEditingTitle('');
   };
 
   const toggleFolder = (folderId: string) => {
@@ -555,28 +441,17 @@ const Sidebar: React.FC = () => {
                 )}
                 <span className="flex-1 break-words">{item.title}</span>
                 {isMeetingItem && (
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleEditStart(item.id, item.title);
-                      }}
-                      className="text-muted-foreground hover:text-brand p-1 rounded-md hover:bg-brand/10 flex-shrink-0"
-                      aria-label="Edit meeting title"
-                    >
-                      <Pencil className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDeleteModalState({ isOpen: true, itemId: item.id });
-                      }}
-                      className="text-muted-foreground hover:text-destructive p-1 rounded-md hover:bg-destructive/10 flex-shrink-0"
-                      aria-label="Delete meeting"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
+                  // Dimmed rather than hidden: the row actions used to be
+                  // opacity-0 until hover, which made rename/delete impossible
+                  // to find (and unreachable without a pointer).
+                  <MeetingActionsMenu
+                    meetingId={item.id}
+                    title={item.title}
+                    className="opacity-60 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 transition-opacity duration-150"
+                    onRenamed={(newTitle) => handleMeetingRenamed(item.id, newTitle)}
+                    onTrashed={() => handleMeetingTrashed(item.id)}
+                    onRestored={refetchMeetings}
+                  />
                 )}
               </div>
             </div>
@@ -762,57 +637,6 @@ const Sidebar: React.FC = () => {
         )}
       </div>
 
-      {/* Confirmation Modal for Delete */}
-      <ConfirmationModal
-        isOpen={deleteModalState.isOpen}
-        text="Move this meeting to the trash? You can undo right after, and trashed meetings are automatically removed after 30 days."
-        onConfirm={handleDeleteConfirm}
-        onCancel={() => setDeleteModalState({ isOpen: false, itemId: null })}
-      />
-
-      {/* Edit Meeting Title Modal */}
-      <Dialog open={editModalState.isOpen} onOpenChange={(open) => {
-        if (!open) handleEditCancel();
-      }}>
-        <DialogContent className="sm:max-w-[425px]">
-          <VisuallyHidden>
-            <DialogTitle>Edit Meeting Title</DialogTitle>
-          </VisuallyHidden>
-          <div className="py-4">
-            <h3 className="text-lg font-semibold mb-4">Edit Meeting Title</h3>
-            <div className="space-y-4">
-              <div>
-                <label htmlFor="meeting-title" className="block text-sm font-medium text-muted-foreground mb-2">
-                  Meeting Title
-                </label>
-                <Input
-                  id="meeting-title"
-                  type="text"
-                  value={editingTitle}
-                  onChange={(e) => setEditingTitle(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      handleEditConfirm();
-                    } else if (e.key === 'Escape') {
-                      handleEditCancel();
-                    }
-                  }}
-                  placeholder="Enter meeting title"
-                  autoFocus
-                />
-              </div>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="ghost" onClick={handleEditCancel}>
-              Cancel
-            </Button>
-            <Button onClick={handleEditConfirm}>
-              Save
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 };

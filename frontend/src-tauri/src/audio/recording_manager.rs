@@ -30,6 +30,10 @@ pub struct RecordingManager {
     recording_saver: RecordingSaver,
     device_monitor: Option<AudioDeviceMonitor>,
     device_event_receiver: Option<mpsc::UnboundedReceiver<DeviceEvent>>,
+    /// Whether the pipeline should silence speaker bleed-through before the mic
+    /// VAD. Held on the manager rather than passed to `start_recording` so the
+    /// device-reconnect restart paths carry the same setting through.
+    echo_suppression: bool,
 }
 
 // SAFETY: RecordingManager contains types that we've marked as Send
@@ -50,7 +54,15 @@ impl RecordingManager {
             recording_saver: RecordingSaver::new(),
             device_monitor: Some(device_monitor),
             device_event_receiver: Some(device_event_receiver),
+            echo_suppression: false,
         }
+    }
+
+    /// Enable or disable echo suppression for the next `start_recording`.
+    /// Resolved by the caller from user preferences plus the active output
+    /// device, so the manager stays free of preference plumbing.
+    pub fn set_echo_suppression(&mut self, enabled: bool) {
+        self.echo_suppression = enabled;
     }
 
     // Remove app handle storage for now - will be passed directly when saving
@@ -121,6 +133,7 @@ impl RecordingManager {
             mic_kind,
             sys_name,
             sys_kind,
+            self.echo_suppression,
         )?;
 
         // Give the pipeline a moment to fully initialize before starting streams

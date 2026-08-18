@@ -11,6 +11,8 @@ use log::error;
 #[cfg(target_os = "macos")]
 use crate::audio::capture::AudioCaptureBackend;
 
+use crate::audio::echo_suppression::EchoSuppressionMode;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RecordingPreferences {
     pub save_folder: PathBuf,
@@ -27,6 +29,11 @@ pub struct RecordingPreferences {
     /// Default true (matching v1 product decision); first run downloads ~80 MB.
     #[serde(default = "default_true")]
     pub diarization_enabled: bool,
+    /// Suppress speaker bleed-through (the remote participant's voice re-entering
+    /// the microphone) before it reaches the mic VAD. `Auto` engages unless the
+    /// active output device is confidently headphones.
+    #[serde(default)]
+    pub echo_cancellation: EchoSuppressionMode,
 }
 
 fn default_true() -> bool {
@@ -44,6 +51,7 @@ impl Default for RecordingPreferences {
             #[cfg(target_os = "macos")]
             system_audio_backend: Some("coreaudio".to_string()),
             diarization_enabled: true,
+            echo_cancellation: EchoSuppressionMode::Auto,
         }
     }
 }

@@ -3,8 +3,8 @@
 use crate::audio::decoder::decode_audio_file;
 use crate::audio::vad::get_speech_chunks_with_progress;
 use super::common::{
-    build_channel_jobs, create_transcript_segments_with_speakers, split_segment_at_silence,
-    write_transcripts_json, ChannelLayout,
+    build_channel_jobs, create_transcript_segments_with_speakers, echo_suppression_enabled,
+    split_segment_at_silence, write_transcripts_json, ChannelLayout,
 };
 use super::constants::AUDIO_EXTENSIONS;
 use crate::config::{DEFAULT_WHISPER_MODEL, DEFAULT_PARAKEET_MODEL};
@@ -229,10 +229,17 @@ async fn run_retranscription<R: Runtime>(
     // channel origin, no acoustic diarization needed. `Mixed` (or a mono file)
     // transcribes a single untagged channel (speaker = NULL). See
     // `common::build_channel_jobs`.
+    // The recording stores the *raw* microphone, so speaker bleed-through is
+    // still in it — apply the same gating the live pipeline does, unless the
+    // user turned echo suppression off. ("Auto" engages here: the current output
+    // device says nothing about what was playing when this was recorded.)
+    let echo_suppression = echo_suppression_enabled(&app).await;
     let channels: Vec<(Vec<f32>, Option<&'static str>)> =
-        tokio::task::spawn_blocking(move || build_channel_jobs(decoded, channel_layout))
-            .await
-            .map_err(|e| anyhow!("Channel preparation task panicked: {}", e))?;
+        tokio::task::spawn_blocking(move || {
+            build_channel_jobs(decoded, channel_layout, echo_suppression)
+        })
+        .await
+        .map_err(|e| anyhow!("Channel preparation task panicked: {}", e))?;
 
     // Check for cancellation
     if RETRANSCRIPTION_CANCELLED.load(Ordering::SeqCst) {
@@ -298,8 +305,12 @@ async fn run_retranscription<R: Runtime>(
 
     emit_progress(&app, &meeting_id, "saving", 80, "Saving transcripts...");
 
-    // Create transcript segments (with source-faithful speaker tags) from VAD timings
-    let segments = create_transcript_segments_with_speakers(&tagged);
+    // Create transcript segments (with source-faithful speaker tags) from VAD
+    // timings, then drop any mic segment that merely echoes a system one — the
+    // safety net for bleed-through the gating above did not catch.
+    let segments = crate::audio::transcript_dedup::drop_echoed_mic_segments(
+        create_transcript_segments_with_speakers(&tagged),
+    );
 
     // Save to database
     let app_state = app

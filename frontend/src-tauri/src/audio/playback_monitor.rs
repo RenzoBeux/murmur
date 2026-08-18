@@ -13,6 +13,26 @@ pub struct AudioOutputInfo {
     pub device_type: String,
 }
 
+/// Whether playback confidently reaches the ear only, so the microphone cannot
+/// pick the remote participants back up.
+///
+/// Used to decide whether echo suppression is worth running at all. Only a
+/// positive identification counts: an unknown or undetectable device returns
+/// `false` so suppression engages. That bias is safe — the detector is
+/// correlation-based and gates nothing when nothing echoes — whereas a wrong
+/// `true` would leave the duplicate-transcription bug in place.
+pub async fn output_is_headphones() -> bool {
+    match get_active_audio_output().await {
+        Ok(info) => info.device_type == "Headphones",
+        Err(e) => {
+            #[cfg(target_os = "macos")]
+            debug!("Could not identify output device ({e}); assuming speakers");
+            let _ = e;
+            false
+        }
+    }
+}
+
 /// Get information about the current audio output device
 pub async fn get_active_audio_output() -> Result<AudioOutputInfo> {
     #[cfg(target_os = "macos")]

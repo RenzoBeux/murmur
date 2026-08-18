@@ -17,6 +17,8 @@ pub mod ffmpeg_mixer;  // NEW: FFmpeg-style adaptive audio mixer
 
 // New simplified audio system
 pub mod recording_state;
+pub mod echo_suppression;  // Silences speaker bleed-through before the mic VAD
+pub mod transcript_dedup;  // Drops echoed mic segments the DSP gate let through
 pub mod pipeline;
 pub mod stream;
 pub mod recording_manager;
@@ -82,6 +84,8 @@ pub use system_audio_commands::{
 
 // Export new simplified components
 pub use recording_state::{RecordingState, AudioChunk, ProcessedAudioChunk, AudioError, DeviceType as RecordingDeviceType};
+pub use echo_suppression::{EchoStats, EchoSuppressionMode, EchoSuppressor};
+pub use transcript_dedup::drop_echoed_mic_segments;
 pub use pipeline::{AudioPipelineManager};
 pub use stream::{AudioStreamManager};
 pub use recording_manager::{RecordingManager};

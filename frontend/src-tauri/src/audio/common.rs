@@ -20,6 +20,27 @@ pub(crate) enum ChannelLayout {
     Separate { you_channel: usize },
 }
 
+/// Whether the offline paths (import, retranscription) should gate speaker
+/// bleed-through, from the user's preference.
+///
+/// Unlike the live path, `Auto` always engages here: the output device attached
+/// right now says nothing about what was playing when the audio was recorded,
+/// and the detector self-disables when nothing correlates. Only an explicit
+/// `Off` skips it.
+pub(crate) async fn echo_suppression_enabled<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> bool {
+    use crate::audio::echo_suppression::EchoSuppressionMode;
+
+    match crate::audio::recording_preferences::load_recording_preferences(app).await {
+        Ok(prefs) => prefs.echo_cancellation != EchoSuppressionMode::Off,
+        Err(e) => {
+            log::warn!("Could not read the echo-cancellation preference ({e}); leaving it on");
+            true
+        }
+    }
+}
+
 /// Deinterleave one channel from interleaved multi-channel samples.
 pub(crate) fn extract_channel(interleaved: &[f32], channels: u16, channel_index: usize) -> Vec<f32> {
     let ch = (channels as usize).max(1);
@@ -38,10 +59,17 @@ pub(crate) fn extract_channel(interleaved: &[f32], channels: u16, channel_index:
 /// paired with its source speaker tag (`Some("mic")` / `Some("system")` for a
 /// channel-separated recording, or `None` for a mixed one).
 ///
+/// With `echo_suppression` set, a channel-separated recording gets the same
+/// speaker-bleed gating the live pipeline applies: the mic channel is silenced
+/// wherever it is explained by the system channel. Without it, re-transcribing a
+/// meeting recorded on speakers reproduces the duplicate-speaker bug, because
+/// the recording deliberately stores the *raw* microphone.
+///
 /// Resampling is the heavy part — call this inside `spawn_blocking`.
 pub(crate) fn build_channel_jobs(
     decoded: DecodedAudio,
     layout: ChannelLayout,
+    echo_suppression: bool,
 ) -> Vec<(Vec<f32>, Option<&'static str>)> {
     match layout {
         ChannelLayout::Separate { you_channel } if decoded.channels >= 2 => {
@@ -67,10 +95,16 @@ pub(crate) fn build_channel_jobs(
                 duration_seconds: dur,
             };
             drop(decoded);
-            vec![
-                (you.to_whisper_format(), Some("mic")),
-                (them.to_whisper_format(), Some("system")),
-            ]
+            let them_16k = them.to_whisper_format();
+            let mut you_16k = you.to_whisper_format();
+            if echo_suppression {
+                // Both channels came from the same interleaved file, so they are
+                // already sample-aligned; only the acoustic delay remains.
+                // `to_whisper_format` has already brought both to 16 kHz mono.
+                you_16k =
+                    crate::audio::echo_suppression::suppress_echo_offline(&you_16k, &them_16k, 16_000);
+            }
+            vec![(you_16k, Some("mic")), (them_16k, Some("system"))]
         }
         _ => vec![(decoded.to_whisper_format(), None)],
     }

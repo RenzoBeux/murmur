@@ -1,9 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { FolderOpen } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { DeviceSelection, SelectedDevices } from '@/components/DeviceSelection';
 import { toast } from 'sonner';
+
+/** Matches the Rust `EchoSuppressionMode` (serialized lowercase). */
+export type EchoCancellationMode = 'auto' | 'on' | 'off';
 
 export interface RecordingPreferences {
   save_folder: string;
@@ -12,6 +16,7 @@ export interface RecordingPreferences {
   preferred_mic_device: string | null;
   preferred_system_device: string | null;
   diarization_enabled: boolean;
+  echo_cancellation: EchoCancellationMode;
 }
 
 interface RecordingSettingsProps {
@@ -26,6 +31,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     preferred_mic_device: null,
     preferred_system_device: null,
     diarization_enabled: true,
+    echo_cancellation: 'auto',
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -75,6 +81,12 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     await savePreferences(newPreferences);
   };
 
+  const handleEchoCancellationChange = async (mode: EchoCancellationMode) => {
+    const newPreferences = { ...preferences, echo_cancellation: mode };
+    setPreferences(newPreferences);
+    await savePreferences(newPreferences, 'Echo cancellation saved');
+  };
+
   const handleDeviceChange = async (devices: SelectedDevices) => {
     const newPreferences = {
       ...preferences,
@@ -107,21 +119,25 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     }
   };
 
-  const savePreferences = async (prefs: RecordingPreferences) => {
+  const savePreferences = async (prefs: RecordingPreferences, successMessage?: string) => {
     setSaving(true);
     try {
       await invoke('set_recording_preferences', { preferences: prefs });
       onSave?.(prefs);
 
-      // Show success toast with device details
-      const micDevice = prefs.preferred_mic_device || 'Default';
-      const systemDevice = prefs.preferred_system_device || 'Default';
-      toast.success("Device preferences saved", {
-        description: `Microphone: ${micDevice}, System Audio: ${systemDevice}`
-      });
+      if (successMessage) {
+        toast.success(successMessage);
+      } else {
+        // Show success toast with device details
+        const micDevice = prefs.preferred_mic_device || 'Default';
+        const systemDevice = prefs.preferred_system_device || 'Default';
+        toast.success("Device preferences saved", {
+          description: `Microphone: ${micDevice}, System Audio: ${systemDevice}`
+        });
+      }
     } catch (error) {
       console.error('Failed to save recording preferences:', error);
-      toast.error("Failed to save device preferences", {
+      toast.error("Failed to save recording preferences", {
         description: error instanceof Error ? error.message : String(error)
       });
     } finally {
@@ -211,6 +227,32 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
           checked={showRecordingNotification}
           onCheckedChange={handleNotificationToggle}
         />
+      </div>
+
+      {/* Echo Cancellation */}
+      <div className="p-4 border rounded-lg space-y-3">
+        <div>
+          <div className="font-medium">Echo Cancellation</div>
+          <div className="text-sm text-muted-foreground">
+            When you listen on speakers, your microphone also picks up the other participants,
+            and they get transcribed twice. This detects that bleed-through and keeps it out of
+            the transcript. Your recorded audio is never modified.
+          </div>
+        </div>
+        <Select
+          value={preferences.echo_cancellation}
+          onValueChange={(value) => handleEchoCancellationChange(value as EchoCancellationMode)}
+          disabled={saving}
+        >
+          <SelectTrigger id="echo-cancellation" className="w-full">
+            <SelectValue placeholder="Select mode" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="auto">Automatic — on unless you are wearing headphones</SelectItem>
+            <SelectItem value="on">Always on</SelectItem>
+            <SelectItem value="off">Off</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
       {/* Device Preferences */}

@@ -423,16 +423,16 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     let mut manager = RecordingManager::new();
 
     // Load recording preferences to get auto_save AND device preferences
-    let (auto_save, preferred_mic_name, preferred_system_name) =
+    let (auto_save, preferred_mic_name, preferred_system_name, echo_mode) =
         match super::recording_preferences::load_recording_preferences(&app).await {
             Ok(prefs) => {
-                info!("📋 Loaded recording preferences: auto_save={}, preferred_mic={:?}, preferred_system={:?}",
-                      prefs.auto_save, prefs.preferred_mic_device, prefs.preferred_system_device);
-                (prefs.auto_save, prefs.preferred_mic_device, prefs.preferred_system_device)
+                info!("📋 Loaded recording preferences: auto_save={}, preferred_mic={:?}, preferred_system={:?}, echo_cancellation={:?}",
+                      prefs.auto_save, prefs.preferred_mic_device, prefs.preferred_system_device, prefs.echo_cancellation);
+                (prefs.auto_save, prefs.preferred_mic_device, prefs.preferred_system_device, prefs.echo_cancellation)
             }
             Err(e) => {
                 warn!("Failed to load recording preferences, using defaults: {}", e);
-                (true, None, None)
+                (true, None, None, Default::default())
             }
         };
 
@@ -543,6 +543,8 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     // to mic-only (loopback stream failed to start).
     let system_requested = system_device.is_some();
     let system_name_for_event = system_device.as_ref().map(|d| d.name.clone());
+
+    manager.set_echo_suppression(resolve_echo_suppression(echo_mode).await);
 
     // Start recording with resolved devices (replaces start_recording_with_defaults_and_auto_save call)
     let transcription_receiver = manager
@@ -698,14 +700,15 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     let mut manager = RecordingManager::new();
 
     // Load recording preferences to check auto_save setting
-    let auto_save = match super::recording_preferences::load_recording_preferences(&app).await {
+    let (auto_save, echo_mode) = match super::recording_preferences::load_recording_preferences(&app).await {
         Ok(prefs) => {
-            info!("📋 Loaded recording preferences: auto_save={}", prefs.auto_save);
-            prefs.auto_save
+            info!("📋 Loaded recording preferences: auto_save={}, echo_cancellation={:?}",
+                  prefs.auto_save, prefs.echo_cancellation);
+            (prefs.auto_save, prefs.echo_cancellation)
         }
         Err(e) => {
             warn!("Failed to load recording preferences, defaulting to auto_save=true: {}", e);
-            true // Default to saving if preferences can't be loaded
+            (true, Default::default()) // Default to saving if preferences can't be loaded
         }
     };
 
@@ -724,6 +727,8 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 
     let system_requested = system_device.is_some();
     let system_name_for_event = system_device.as_ref().map(|d| d.name.clone());
+
+    manager.set_echo_suppression(resolve_echo_suppression(echo_mode).await);
 
     // Start recording with specified devices and auto_save setting
     let transcription_receiver = manager
@@ -806,14 +811,37 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     Ok(())
 }
 
+/// Resolve whether the pipeline should silence speaker bleed-through before the
+/// mic VAD, from the user's preference and the device actually playing the
+/// meeting. Only `Auto` consults the hardware; `On`/`Off` are absolute.
+async fn resolve_echo_suppression(mode: super::echo_suppression::EchoSuppressionMode) -> bool {
+    use super::echo_suppression::EchoSuppressionMode;
+
+    let headphones = if mode == EchoSuppressionMode::Auto {
+        super::playback_monitor::output_is_headphones().await
+    } else {
+        false
+    };
+    let engaged = mode.should_engage(headphones);
+    info!(
+        "🔁 Echo suppression: mode={:?}, headphones={}, engaged={}",
+        mode, headphones, engaged
+    );
+    engaged
+}
+
 /// Convert the recording saver's transcript segments into the repository's
 /// `TranscriptSegment` shape used by `save_transcript` (the same type the frontend
 /// save path deserializes into). The saver type carries a `display_time` label and
 /// f64 timings; the repo type wants a `timestamp` string and Option-wrapped timings.
+///
+/// This is also where the echo dedup safety net runs: by this point the segment
+/// list is complete and ordered, so a mic segment can be compared against the
+/// system segment it echoes regardless of which worker finished first.
 fn recording_segments_to_api(
     segments: &[super::recording_saver::TranscriptSegment],
 ) -> Vec<crate::api::TranscriptSegment> {
-    segments
+    let converted: Vec<crate::api::TranscriptSegment> = segments
         .iter()
         .map(|s| crate::api::TranscriptSegment {
             id: s.id.clone(),
@@ -828,7 +856,9 @@ fn recording_segments_to_api(
                 Some(s.speaker.clone())
             },
         })
-        .collect()
+        .collect();
+
+    super::transcript_dedup::drop_echoed_mic_segments(converted)
 }
 
 /// Best-effort persist of the in-progress recording's transcript at app exit / tray quit.

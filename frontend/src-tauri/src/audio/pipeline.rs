@@ -11,6 +11,7 @@ use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolat
 use super::devices::AudioDevice;
 use super::recording_state::{AudioChunk, AudioError, RecordingState, DeviceType};
 use super::audio_processing::{audio_to_mono, LoudnessNormalizer, NoiseSuppressionProcessor, HighPassFilter};
+use super::echo_suppression::EchoSuppressor;
 use super::vad::{ContinuousVadProcessor};
 
 /// Ring buffer for synchronized audio mixing
@@ -668,6 +669,11 @@ pub struct AudioPipeline {
     // Whisper. The recording (ring-buffer mix) keeps the raw system audio. `None` if
     // construction fails (normalization simply skipped).
     sys_loudness_normalizer: Option<LoudnessNormalizer>,
+    // Silences the speaker bleed-through that would otherwise reach the mic VAD
+    // and get transcribed a second time under the "you" speaker tag. Applied to
+    // the mic's VAD copy ONLY — the recording keeps the raw microphone. `None`
+    // when suppression is disabled or the output is headphones.
+    echo_suppressor: Option<EchoSuppressor>,
     sample_rate: u32,
     chunk_id_counter: u64,
     // Performance optimization: reduce logging frequency
@@ -692,6 +698,7 @@ impl AudioPipeline {
         mic_device_kind: super::device_detection::InputDeviceKind,
         system_device_name: String,
         system_device_kind: super::device_detection::InputDeviceKind,
+        echo_suppression: bool,
     ) -> anyhow::Result<Self> {
         // Log device characteristics for adaptive buffering
         info!("🎛️ AudioPipeline initializing with device characteristics:");
@@ -745,6 +752,15 @@ impl AudioPipeline {
         // Ring buffer aligns the mic + system streams into equal-sized windows.
         let ring_buffer = AudioMixerRingBuffer::new(sample_rate);
 
+        // The ring buffer's aligned windows double as the reference signal for
+        // echo detection, so suppression lives here rather than at capture time.
+        let echo_suppressor = if echo_suppression {
+            Some(EchoSuppressor::new(sample_rate))
+        } else {
+            info!("ℹ️ Echo suppression disabled — mic audio reaches the VAD unmodified");
+            None
+        };
+
         // Note: target_chunk_duration_ms is ignored - VAD controls segmentation now
         let _ = target_chunk_duration_ms;
 
@@ -755,6 +771,7 @@ impl AudioPipeline {
             mic_vad_processor,
             sys_vad_processor,
             sys_loudness_normalizer,
+            echo_suppressor,
             sample_rate,
             chunk_id_counter: 0,
             // Performance optimization: reduce logging frequency
@@ -830,7 +847,16 @@ impl AudioPipeline {
                             // segment is preserved as a stable speaker tag downstream.
                             // Both VADs receive equal-sized synchronized windows from the ring
                             // buffer, so their internal sample timelines stay aligned.
-                            let mic_vad_result = self.mic_vad_processor.process_audio(&mic_window);
+                            // Speaker bleed-through is silenced before the mic VAD, so the
+                            // remote participant's voice is not transcribed a second time
+                            // under the "you" tag. The raw mic_window continues untouched
+                            // to the stereo recording below.
+                            let mic_gated = self
+                                .echo_suppressor
+                                .as_mut()
+                                .map(|es| es.process_mic(&mic_window, &sys_window));
+                            let mic_input: &[f32] = mic_gated.as_deref().unwrap_or(&mic_window);
+                            let mic_vad_result = self.mic_vad_processor.process_audio(mic_input);
                             // System VAD + transcription get a loudness-normalized copy so a
                             // quiet remote participant isn't gated out; recording stays raw.
                             let sys_norm = self
@@ -918,6 +944,27 @@ impl AudioPipeline {
         // Flush any remaining VAD segments
         self.flush_remaining_audio()?;
 
+        // Surface what echo suppression actually did — the single most useful
+        // number when a user reports either duplicated speech (too little gating)
+        // or missing speech (too much).
+        if let Some(ref es) = self.echo_suppressor {
+            let stats = es.stats();
+            info!(
+                "🔁 Echo suppression summary: {}/{} frames gated ({:.1}%), delay={}, coupling={}",
+                stats.frames_gated,
+                stats.frames_total,
+                stats.gated_ratio() * 100.0,
+                stats
+                    .delay_ms
+                    .map(|d| format!("{d:.1}ms"))
+                    .unwrap_or_else(|| "not locked".to_string()),
+                stats
+                    .coupling_gain
+                    .map(|g| format!("{g:.3}"))
+                    .unwrap_or_else(|| "not learned".to_string()),
+            );
+        }
+
         info!("VAD-driven audio pipeline ended");
         Ok(())
     }
@@ -929,7 +976,14 @@ impl AudioPipeline {
         // word) from the ring buffer and push it through the VADs + recording BEFORE
         // flushing. Idempotent — drain_partial yields None once the buffer is empty.
         if let Some((mic_partial, sys_partial)) = self.ring_buffer.drain_partial() {
-            let mic_vad_result = self.mic_vad_processor.process_audio(&mic_partial);
+            // Same echo gating as the steady-state path; the raw mic_partial below
+            // still reaches the recording faithfully.
+            let mic_gated = self
+                .echo_suppressor
+                .as_mut()
+                .map(|es| es.process_mic(&mic_partial, &sys_partial));
+            let mic_input: &[f32] = mic_gated.as_deref().unwrap_or(&mic_partial);
+            let mic_vad_result = self.mic_vad_processor.process_audio(mic_input);
             // Normalize a copy for the system VAD only; the raw sys_partial below still
             // goes to the recording faithfully.
             let sys_norm = self
@@ -1048,11 +1102,13 @@ impl AudioPipelineManager {
         mic_device_kind: super::device_detection::InputDeviceKind,
         system_device_name: String,
         system_device_kind: super::device_detection::InputDeviceKind,
+        echo_suppression: bool,
     ) -> Result<()> {
         // Log device information for adaptive buffering
         info!("🎙️ Starting pipeline with device info:");
         info!("   Microphone: '{}' ({:?})", mic_device_name, mic_device_kind);
         info!("   System Audio: '{}' ({:?})", system_device_name, system_device_kind);
+        info!("   Echo suppression: {}", if echo_suppression { "on" } else { "off" });
 
         // Create audio processing channel
         let (audio_sender, audio_receiver) = mpsc::unbounded_channel::<AudioChunk>();
@@ -1071,6 +1127,7 @@ impl AudioPipelineManager {
             mic_device_kind,
             system_device_name,
             system_device_kind,
+            echo_suppression,
         )?;
 
         // CRITICAL FIX: Connect recording sender to receive pre-mixed audio

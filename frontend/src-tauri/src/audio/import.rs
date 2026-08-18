@@ -428,8 +428,13 @@ async fn run_import<R: Runtime>(
     // Build per-channel transcription jobs from the requested layout. `Separate`
     // splits a two-channel file into you (mic) / them (system); `Mixed` (or a
     // mono file) yields a single untagged channel. See `common::build_channel_jobs`.
+    // Echo gating is deliberately NOT applied on import. It assumes the two
+    // channels are a microphone and a separate playback stream, which holds for
+    // Murmur's own recordings but not for an arbitrary stereo file — a room
+    // recording has near-identical L/R, and gating would blank one channel. The
+    // text-level dedup below still catches genuine duplication.
     let channels: Vec<(Vec<f32>, Option<&'static str>)> =
-        tokio::task::spawn_blocking(move || build_channel_jobs(decoded, channel_layout))
+        tokio::task::spawn_blocking(move || build_channel_jobs(decoded, channel_layout, false))
             .await
             .map_err(|e| anyhow!("Channel preparation task panicked: {}", e))?;
     let num_channels = channels.len();
@@ -596,8 +601,11 @@ async fn run_import<R: Runtime>(
 
     emit_progress(&app, "saving", 85, "Creating meeting...");
 
-    // Create transcript segments (carrying per-channel speaker tags)
-    let segments = create_transcript_segments_with_speakers(&all_transcripts);
+    // Create transcript segments (carrying per-channel speaker tags), then drop
+    // any mic segment that merely echoes a system one.
+    let segments = crate::audio::transcript_dedup::drop_echoed_mic_segments(
+        create_transcript_segments_with_speakers(&all_transcripts),
+    );
 
     // Save to database
     let app_state = app

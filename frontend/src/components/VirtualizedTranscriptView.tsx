@@ -12,6 +12,7 @@ import { TranscriptSegmentData } from "@/types";
 import { formatSpeaker } from "@/lib/speakerLabel";
 import { SpeakerPicker } from "./MeetingDetails/SpeakerPicker";
 import { Logomark } from "./brand/Logomark";
+import { ArrowDown } from "lucide-react";
 
 /**
  * Edit-mode controls passed through to each row. When undefined the view
@@ -360,7 +361,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     });
 
     // Custom hook for auto-scrolling (supports both virtualized and non-virtualized)
-    useAutoScroll({
+    const { scrollToBottom, isAtBottom } = useAutoScroll({
         scrollRef,
         segments,
         isRecording,
@@ -437,6 +438,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     const useVirtualization = segments.length >= VIRTUALIZATION_THRESHOLD;
 
     return (
+        <div className="relative h-full min-h-0">
         <div ref={scrollRef} className="flex flex-col h-full overflow-y-auto px-4 py-2">
             {/* Recording Status Bar - Sticky at top, always visible when recording */}
             <AnimatePresence>
@@ -627,6 +629,29 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                 </>
             )}
             </div>
+        </div>
+
+            {/* Jump back to the newest line. `isAtBottom` is measured from the DOM,
+                so this stays hidden when the transcript is short enough not to
+                scroll, and appears on a long meeting opened at the top — where
+                auto-scroll is deliberately off and there is otherwise no way back
+                down but dragging. */}
+            <AnimatePresence>
+                {!isAtBottom && segments.length > 0 && (
+                    <motion.button
+                        type="button"
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 8 }}
+                        transition={{ duration: 0.15 }}
+                        onClick={scrollToBottom}
+                        aria-label="Scroll to the latest transcript line"
+                        className="absolute bottom-4 right-5 z-20 flex h-9 w-9 items-center justify-center rounded-full bg-brand text-brand-foreground shadow-lg transition-colors hover:bg-brand-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                    >
+                        <ArrowDown size={16} />
+                    </motion.button>
+                )}
+            </AnimatePresence>
         </div>
     );
 };

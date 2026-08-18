@@ -16,6 +16,15 @@ interface UseAutoScrollReturn {
     autoScroll: boolean;
     setAutoScroll: (value: boolean) => void;
     scrollToBottom: () => void;
+    /**
+     * Whether the view is currently parked at the bottom. Distinct from
+     * `autoScroll`, which is the user's *intent* to follow new content:
+     * `isAtBottom` is measured from the DOM, so it is correct on first paint
+     * and while auto-scroll is disabled entirely. Drives the "go to bottom"
+     * affordance. A container too short to scroll counts as at the bottom, so
+     * nothing is offered when there is nowhere to go.
+     */
+    isAtBottom: boolean;
 }
 
 // Threshold in pixels to consider "at the bottom"
@@ -47,6 +56,7 @@ export function useAutoScroll({
 }: UseAutoScrollProps): UseAutoScrollReturn {
     const useVirtualization = virtualizer && segments.length >= virtualizationThreshold;
     const [autoScroll, setAutoScroll] = useState(true);
+    const [isAtBottom, setIsAtBottom] = useState(true);
     // Ref to always have current autoScroll value in effects
     const autoScrollRef = useRef(autoScroll);
     autoScrollRef.current = autoScroll;
@@ -68,21 +78,45 @@ export function useAutoScroll({
     }, [scrollRef]);
 
     /**
+     * Measure whether the view sits at the bottom right now, straight from the
+     * DOM rather than from tracked intent.
+     */
+    const measureAtBottom = useCallback(() => {
+        const el = scrollRef.current;
+        if (!el) return;
+        const { scrollTop, scrollHeight, clientHeight } = el;
+        const canScroll = scrollHeight - clientHeight > SCROLL_THRESHOLD;
+        setIsAtBottom(!canScroll || scrollHeight - scrollTop - clientHeight <= SCROLL_THRESHOLD);
+    }, [scrollRef]);
+
+    /**
      * Scroll to bottom programmatically
      */
     const scrollToBottom = useCallback(() => {
-        if (scrollRef.current) {
-            isProgrammaticScrollRef.current = true;
-            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-            userScrolledRef.current = false;
-            setAutoScroll(true);
+        const el = scrollRef.current;
+        if (!el) return;
 
-            // Reset the flag after a small delay to account for scroll event propagation
-            setTimeout(() => {
-                isProgrammaticScrollRef.current = false;
-            }, 50);
+        isProgrammaticScrollRef.current = true;
+        // Ask the virtualizer first so it renders the tail rows; without this the
+        // spacer's height is only an estimate for anything never scrolled to, and
+        // the jump lands short of the real end.
+        if (useVirtualization && virtualizer) {
+            virtualizer.scrollToOffset(virtualizer.getTotalSize() + 1000, { align: "end" });
         }
-    }, [scrollRef]);
+        el.scrollTop = el.scrollHeight;
+        userScrolledRef.current = false;
+        setAutoScroll(true);
+        setIsAtBottom(true);
+
+        // Rows measure as they render, so the total size can still grow after the
+        // first jump. Correct once it settles, then hand scrolling back to the user.
+        setTimeout(() => {
+            const current = scrollRef.current;
+            if (current) current.scrollTop = current.scrollHeight;
+            isProgrammaticScrollRef.current = false;
+            measureAtBottom();
+        }, 60);
+    }, [scrollRef, useVirtualization, virtualizer, measureAtBottom]);
 
     // Handle scroll events to detect manual scrolling
     useEffect(() => {
@@ -96,6 +130,11 @@ export function useAutoScroll({
             if (isProgrammaticScrollRef.current) {
                 return;
             }
+
+            // Button visibility is measured immediately — debouncing it by 100ms
+            // makes the affordance feel laggy. Reading three layout properties is
+            // cheap, and React bails out when the boolean is unchanged.
+            measureAtBottom();
 
             // Debounce scroll handling to prevent rapid state changes
             if (scrollTimeout) {
@@ -126,7 +165,21 @@ export function useAutoScroll({
                 clearTimeout(scrollTimeout);
             }
         };
-    }, [isNearBottom, scrollRef]);
+    }, [isNearBottom, scrollRef, measureAtBottom]);
+
+    // Re-measure when the content or the container changes size, not just on
+    // scroll. Opening a long transcript never fires a scroll event, so without
+    // this the view would report "at bottom" while parked at the top.
+    useEffect(() => {
+        measureAtBottom();
+
+        const el = scrollRef.current;
+        if (!el || typeof ResizeObserver === "undefined") return;
+
+        const observer = new ResizeObserver(() => measureAtBottom());
+        observer.observe(el);
+        return () => observer.disconnect();
+    }, [segments.length, measureAtBottom, scrollRef]);
 
     // Auto-scroll to bottom when new segments arrive during recording
     useEffect(() => {
@@ -204,5 +257,6 @@ export function useAutoScroll({
         autoScroll,
         setAutoScroll,
         scrollToBottom,
+        isAtBottom,
     };
 }

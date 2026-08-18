@@ -431,6 +431,17 @@ impl RecordingManager {
         self.state.is_paused()
     }
 
+    /// Engage or release the manual microphone kill switch. System audio and the
+    /// recording clock keep running; only microphone samples are discarded.
+    pub fn set_mic_muted(&self, muted: bool) {
+        self.state.set_mic_muted(muted);
+    }
+
+    /// Whether the microphone kill switch is currently engaged
+    pub fn is_mic_muted(&self) -> bool {
+        self.state.is_mic_muted()
+    }
+
     /// Check if recording is active (recording and not paused)
     pub fn is_active(&self) -> bool {
         self.state.is_active()

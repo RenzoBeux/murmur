@@ -171,22 +171,23 @@ fn spawn_recording_supervisor<R: Runtime>(app: AppHandle<R>) {
             tick = tick.wrapping_add(1);
 
             // Sync snapshot; guard dropped before any await/emit.
-            let (levels, events, is_paused) = {
+            let (levels, events, is_paused, is_mic_muted) = {
                 let mut guard = RECORDING_MANAGER.lock().unwrap();
                 match guard.as_mut() {
                     Some(m) => {
                         let state = m.get_state();
                         let levels = state.get_levels();
                         let is_paused = state.is_paused();
+                        let is_mic_muted = state.is_mic_muted();
                         let mut events = Vec::new();
                         if tick % DEVICE_POLL_EVERY == 0 {
                             while let Some(ev) = m.poll_device_events() {
                                 events.push(DeviceEventResponse::from(ev));
                             }
                         }
-                        (Some(levels), events, is_paused)
+                        (Some(levels), events, is_paused, is_mic_muted)
                     }
-                    None => (None, Vec::new(), false),
+                    None => (None, Vec::new(), false, false),
                 }
             };
 
@@ -224,9 +225,15 @@ fn spawn_recording_supervisor<R: Runtime>(app: AppHandle<R>) {
             // Silence watchdog: reset on real mic signal; warn once after the threshold.
             // Catches the "dead mic records silence" case even when the device stays
             // enumerated (so the device monitor never fires).
+            //
+            // A muted mic is silent on purpose, so it must not trip the warning —
+            // and the clock is held rather than merely gated, so releasing the mute
+            // does not immediately warn about silence the user chose.
             if mic_rms > NOISE_FLOOR {
                 last_signal = Instant::now();
                 silence_warned = false;
+            } else if is_mic_muted {
+                last_signal = Instant::now();
             } else if !is_paused
                 && !silence_warned
                 && last_signal.elapsed() > Duration::from_secs(SILENCE_THRESHOLD_SECS)
@@ -1402,6 +1409,49 @@ pub async fn is_recording_paused() -> bool {
     }
 }
 
+/// Manual microphone kill switch.
+///
+/// Unlike `pause_recording`, this leaves the recording (and system audio) running
+/// — it only stops microphone samples from being captured at all. Use it when the
+/// mic is picking up something that must not be recorded or transcribed.
+///
+/// The microphone's OS-level stream stays open, so the system's "mic in use"
+/// indicator remains lit; what changes is that Murmur discards every sample the
+/// moment it arrives.
+#[tauri::command]
+pub async fn set_microphone_muted<R: Runtime>(app: AppHandle<R>, muted: bool) -> Result<(), String> {
+    if !IS_RECORDING.load(Ordering::SeqCst) {
+        return Err("No recording is currently active".to_string());
+    }
+
+    {
+        let manager_guard = RECORDING_MANAGER.lock().unwrap();
+        let Some(manager) = manager_guard.as_ref() else {
+            return Err("No recording manager found".to_string());
+        };
+        manager.set_mic_muted(muted);
+    }
+
+    app.emit(
+        "microphone-muted",
+        serde_json::json!({ "muted": muted }),
+    )
+    .map_err(|e| e.to_string())?;
+
+    info!("🎙️ Microphone kill switch {}", if muted { "engaged" } else { "released" });
+    Ok(())
+}
+
+/// Whether the microphone kill switch is currently engaged
+#[tauri::command]
+pub async fn is_microphone_muted() -> bool {
+    let manager_guard = RECORDING_MANAGER.lock().unwrap();
+    manager_guard
+        .as_ref()
+        .map(|m| m.is_mic_muted())
+        .unwrap_or(false)
+}
+
 /// Get detailed recording state
 #[tauri::command]
 pub async fn get_recording_state() -> serde_json::Value {
@@ -1413,6 +1463,7 @@ pub async fn get_recording_state() -> serde_json::Value {
             "is_recording": is_recording,
             "is_paused": manager.is_paused(),
             "is_active": manager.is_active(),
+            "is_mic_muted": manager.is_mic_muted(),
             "recording_duration": manager.get_recording_duration(),
             "active_duration": manager.get_active_recording_duration(),
             "total_pause_duration": manager.get_total_pause_duration(),
@@ -1423,6 +1474,7 @@ pub async fn get_recording_state() -> serde_json::Value {
             "is_recording": is_recording,
             "is_paused": false,
             "is_active": false,
+            "is_mic_muted": false,
             "recording_duration": null,
             "active_duration": null,
             "total_pause_duration": 0.0,

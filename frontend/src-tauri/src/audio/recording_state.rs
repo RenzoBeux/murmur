@@ -97,6 +97,10 @@ pub struct RecordingState {
     is_recording: AtomicBool,
     is_paused: AtomicBool,
     is_reconnecting: AtomicBool,  // NEW: Attempting to reconnect to device
+    // Manual microphone kill switch. While set, microphone samples are dropped at
+    // the capture callback — nothing from the mic is recorded, transcribed, or
+    // saved. System audio keeps flowing, unlike pause which halts everything.
+    mic_muted: AtomicBool,
 
     // Audio devices
     microphone_device: Mutex<Option<Arc<AudioDevice>>>,
@@ -137,6 +141,7 @@ impl RecordingState {
             is_recording: AtomicBool::new(false),
             is_paused: AtomicBool::new(false),
             is_reconnecting: AtomicBool::new(false),
+            mic_muted: AtomicBool::new(false),
             microphone_device: Mutex::new(None),
             system_device: Mutex::new(None),
             disconnected_device: Mutex::new(None),
@@ -172,9 +177,34 @@ impl RecordingState {
         )
     }
 
+    /// Engage or release the manual microphone kill switch.
+    ///
+    /// While muted, microphone samples are discarded in the capture callback, so
+    /// nothing from the mic reaches the recording, the VAD, or transcription.
+    /// System audio is unaffected — that is the difference from pausing.
+    pub fn set_mic_muted(&self, muted: bool) {
+        self.mic_muted.store(muted, Ordering::SeqCst);
+        if muted {
+            // Park the meter at zero so the HUD reads muted immediately rather
+            // than holding the last level until the next chunk would have landed.
+            self.set_level(&DeviceType::Microphone, 0.0);
+        }
+        log::info!(
+            "🎙️ Microphone {}",
+            if muted { "MUTED (samples discarded)" } else { "unmuted" }
+        );
+    }
+
+    pub fn is_mic_muted(&self) -> bool {
+        self.mic_muted.load(Ordering::SeqCst)
+    }
+
     // Recording control
     pub fn start_recording(&self) -> Result<()> {
         self.is_recording.store(true, Ordering::SeqCst);
+        // Always start unmuted. A mute left over from a previous session would
+        // silently lose a whole meeting's microphone track.
+        self.mic_muted.store(false, Ordering::SeqCst);
         *self.recording_start.lock().unwrap() = Some(Instant::now());
         self.error_count.store(0, Ordering::SeqCst);
         self.recoverable_error_count.store(0, Ordering::SeqCst);
@@ -185,6 +215,7 @@ impl RecordingState {
     pub fn stop_recording(&self) {
         self.is_recording.store(false, Ordering::SeqCst);
         self.is_paused.store(false, Ordering::SeqCst);
+        self.mic_muted.store(false, Ordering::SeqCst);
         // Clear pause tracking when stopping
         *self.pause_start.lock().unwrap() = None;
         // CRITICAL: Clear audio sender to close the pipeline channel
@@ -444,6 +475,7 @@ impl Default for RecordingState {
             is_recording: AtomicBool::new(false),
             is_paused: AtomicBool::new(false),
             is_reconnecting: AtomicBool::new(false),
+            mic_muted: AtomicBool::new(false),
             microphone_device: Mutex::new(None),
             system_device: Mutex::new(None),
             disconnected_device: Mutex::new(None),

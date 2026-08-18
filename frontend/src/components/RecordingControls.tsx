@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
 import { useCallback, useEffect, useState, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { Play, Pause, Square, Mic, AlertCircle, X } from 'lucide-react';
+import { Play, Pause, Square, Mic, MicOff, AlertCircle, X } from 'lucide-react';
 import { ProcessRequest, SummaryResponse } from '@/types/summary';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
@@ -45,6 +45,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   // Use global recording state context for pause state (syncs with tray operations)
   const recordingState = useRecordingState();
   const isPaused = recordingState.isPaused;
+  const isMicMuted = recordingState.isMicMuted;
 
   const [showPlayback, setShowPlayback] = useState(false);
   const [recordingPath, setRecordingPath] = useState<string | null>(null);
@@ -54,6 +55,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const [isStopping, setIsStopping] = useState(false);
   const [isPausing, setIsPausing] = useState(false);
   const [isResuming, setIsResuming] = useState(false);
+  const [isTogglingMute, setIsTogglingMute] = useState(false);
   const MIN_RECORDING_DURATION = 2000; // 2 seconds minimum recording time
   const [transcriptionErrors, setTranscriptionErrors] = useState(0);
   const [isValidatingModel, setIsValidatingModel] = useState(false);
@@ -249,6 +251,23 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       setIsResuming(false);
     }
   }, [isRecording, isPaused, isResuming]);
+
+  const handleToggleMicMute = useCallback(async () => {
+    if (!isRecording || isTogglingMute || isStopping) return;
+
+    const next = !isMicMuted;
+    setIsTogglingMute(true);
+    try {
+      await invoke('set_microphone_muted', { muted: next });
+      // isMicMuted is driven by the microphone-muted event via RecordingStateContext
+      toast.success(next ? 'Microphone off — nothing from your mic is being recorded' : 'Microphone back on');
+    } catch (error) {
+      console.error('Failed to toggle microphone mute:', error);
+      toast.error(`Failed to turn the microphone ${next ? 'off' : 'on'}`);
+    } finally {
+      setIsTogglingMute(false);
+    }
+  }, [isRecording, isMicMuted, isTogglingMute, isStopping]);
 
   useEffect(() => {
     return () => {
@@ -552,8 +571,35 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                       </TooltipContent>
                     </Tooltip>
                   ) : (
-                    // Recording controls (pause/resume + stop)
+                    // Recording controls (mic kill switch + pause/resume + stop)
                     <>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            onClick={handleToggleMicMute}
+                            disabled={isTogglingMute || isStopping}
+                            aria-pressed={isMicMuted}
+                            aria-label={isMicMuted ? 'Turn microphone back on' : 'Turn microphone off'}
+                            className={`w-10 h-10 flex items-center justify-center ${
+                              isTogglingMute || isStopping
+                                ? 'bg-muted border-2 border-border text-muted-foreground/50'
+                                : isMicMuted
+                                  ? 'bg-destructive/15 border-2 border-destructive text-destructive hover:bg-destructive/25'
+                                  : 'bg-transparent border-2 border-border text-muted-foreground hover:border-muted-foreground hover:bg-accent'
+                            } rounded-full transition-colors relative`}
+                          >
+                            {isMicMuted ? <MicOff size={16} /> : <Mic size={16} />}
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>
+                            {isMicMuted
+                              ? 'Microphone off — turn it back on'
+                              : 'Turn the microphone off (system audio keeps recording)'}
+                          </p>
+                        </TooltipContent>
+                      </Tooltip>
+
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <button
@@ -645,10 +691,20 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         )}
 
         {/* Live "speech detected" badge (self-clears after ~600ms of silence) */}
-        {speechDetected && (
+        {speechDetected && !isMicMuted && (
           <div className="flex items-center justify-center gap-1.5 text-xs text-success mt-2">
             <span className="h-2 w-2 rounded-full bg-success animate-pulse" />
             Speech detected
+          </div>
+        )}
+
+        {/* Persistent reminder while the mic kill switch is engaged. Deliberately
+            unmissable: forgetting it is on would silently lose your own audio for
+            the rest of the meeting. */}
+        {isRecording && isMicMuted && (
+          <div className="flex items-center justify-center gap-1.5 text-xs text-destructive font-medium mt-2">
+            <MicOff size={14} />
+            Microphone off — only system audio is being recorded
           </div>
         )}
 

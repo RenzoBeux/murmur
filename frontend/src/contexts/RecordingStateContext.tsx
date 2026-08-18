@@ -28,6 +28,7 @@ interface RecordingState {
   isRecording: boolean;           // Is a recording session active
   isPaused: boolean;              // Is the recording paused
   isActive: boolean;              // Is actively recording (recording && !paused)
+  isMicMuted: boolean;            // Manual mic kill switch — mic samples discarded
   recordingDuration: number | null;  // Total duration including pauses
   activeDuration: number | null;     // Active recording time (excluding pauses)
 
@@ -61,6 +62,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
     isRecording: false,
     isPaused: false,
     isActive: false,
+    isMicMuted: false,
     recordingDuration: null,
     activeDuration: null,
     status: RecordingStatus.IDLE,  // NEW: Initialize with IDLE status
@@ -102,6 +104,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
           isRecording: backendState.is_recording,
           isPaused: backendState.is_paused,
           isActive: backendState.is_active,
+          isMicMuted: backendState.is_mic_muted ?? false,
           recordingDuration: backendState.recording_duration,
           activeDuration: backendState.active_duration,
           status: shouldRestoreStatus ? RecordingStatus.RECORDING : prev.status,
@@ -161,6 +164,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
             isRecording: true,
             isPaused: false,
             isActive: true,
+            isMicMuted: false,  // the backend always starts a session unmuted
             status: RecordingStatus.RECORDING,  // NEW: Set status to RECORDING
           }));
           startPolling();
@@ -188,6 +192,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
               isRecording: false,
               isPaused: false,
               isActive: false,
+              isMicMuted: false,
               recordingDuration: null,
               activeDuration: null,
             };
@@ -217,6 +222,14 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
           }));
         });
         unsubscribers.push(unlistenResumed);
+
+        // Microphone kill switch toggled. Driven by the event rather than the
+        // 500ms poll so the button reflects the change immediately.
+        const unlistenMicMuted = await recordingService.onMicrophoneMuted((muted) => {
+          console.log('[RecordingStateContext] Microphone muted event:', muted);
+          setState(prev => ({ ...prev, isMicMuted: muted }));
+        });
+        unsubscribers.push(unlistenMicMuted);
 
         console.log('[RecordingStateContext] Event listeners set up successfully');
       } catch (error) {

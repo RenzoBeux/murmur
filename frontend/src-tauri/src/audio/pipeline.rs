@@ -359,6 +359,17 @@ impl AudioCapture {
             return;
         }
 
+        // Manual microphone kill switch. Dropping here — before mono conversion,
+        // resampling, enhancement, the ring buffer, and the recording writer —
+        // is what makes this a real failsafe rather than a downstream filter:
+        // no microphone sample survives this point while the switch is engaged.
+        // The ring buffer zero-pads the starved mic side, so the recording gets
+        // silence on its left channel and the timeline stays aligned. System
+        // audio is untouched.
+        if matches!(self.device_type, DeviceType::Microphone) && self.state.is_mic_muted() {
+            return;
+        }
+
         // Convert to mono if needed
         let mut mono_data = if self.channels > 1 {
             audio_to_mono(data, self.channels)
@@ -1282,5 +1293,108 @@ mod tests {
         let _ = rb.extract_window().expect("first full window");
         let (mic, _sys) = rb.drain_partial().expect("100-sample remainder");
         assert_eq!(mic.len(), 100, "only the post-window remainder is drained");
+    }
+
+    // --- Microphone kill switch -------------------------------------------------
+    //
+    // These drive `AudioCapture::process_audio_data` directly — the callback the
+    // cpal stream invokes — because the whole point of the failsafe is that it
+    // acts *there*, before any downstream stage could leak a sample.
+
+    use super::super::devices::configuration::DeviceType as DeviceKind;
+    use super::super::devices::AudioDevice;
+
+    /// A capture wired to a channel we can drain, standing in for a live stream.
+    fn capture_for(
+        device_type: DeviceType,
+        state: Arc<RecordingState>,
+    ) -> (AudioCapture, mpsc::UnboundedReceiver<AudioChunk>) {
+        let (tx, rx) = mpsc::unbounded_channel::<AudioChunk>();
+        state.set_audio_sender(tx);
+        let device = Arc::new(AudioDevice::new("Test Device".to_string(), DeviceKind::Input));
+        let capture = AudioCapture::new(
+            device,
+            state,
+            48_000, // matches the pipeline, so no resampling path is involved
+            1,
+            device_type,
+            None,
+        );
+        (capture, rx)
+    }
+
+    #[test]
+    fn muting_stops_microphone_samples_at_the_capture_callback() {
+        let state = RecordingState::new();
+        state.start_recording().expect("recording starts");
+        let (capture, mut rx) = capture_for(DeviceType::Microphone, state.clone());
+
+        // Unmuted: audio flows.
+        capture.process_audio_data(&[0.4f32; 4800]);
+        assert!(rx.try_recv().is_ok(), "an unmuted mic must reach the pipeline");
+
+        // Muted: nothing does, no matter how loud.
+        state.set_mic_muted(true);
+        for _ in 0..10 {
+            capture.process_audio_data(&[0.9f32; 4800]);
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "not one microphone sample may pass while muted"
+        );
+
+        // Unmuting restores flow without needing a restart.
+        state.set_mic_muted(false);
+        capture.process_audio_data(&[0.4f32; 4800]);
+        assert!(rx.try_recv().is_ok(), "unmuting resumes capture");
+    }
+
+    #[test]
+    fn muting_the_microphone_leaves_system_audio_flowing() {
+        // This is the difference from pausing: the meeting keeps being recorded,
+        // only the microphone goes quiet.
+        let state = RecordingState::new();
+        state.start_recording().expect("recording starts");
+        let (capture, mut rx) = capture_for(DeviceType::System, state.clone());
+
+        state.set_mic_muted(true);
+        capture.process_audio_data(&[0.4f32; 4800]);
+
+        assert!(
+            rx.try_recv().is_ok(),
+            "system audio must keep recording while the mic is muted"
+        );
+    }
+
+    #[test]
+    fn muting_parks_the_level_meter_at_zero() {
+        let state = RecordingState::new();
+        state.start_recording().expect("recording starts");
+        let (capture, _rx) = capture_for(DeviceType::Microphone, state.clone());
+
+        capture.process_audio_data(&[0.5f32; 4800]);
+        let (mic_rms, _) = state.get_levels();
+        assert!(mic_rms > 0.0, "a live mic publishes a level");
+
+        state.set_mic_muted(true);
+        let (mic_rms, _) = state.get_levels();
+        assert_eq!(mic_rms, 0.0, "the HUD must read muted immediately, not stale");
+    }
+
+    #[test]
+    fn a_new_recording_always_starts_unmuted() {
+        // A mute surviving into the next meeting would silently lose its whole
+        // microphone track, so both ends of the lifecycle clear it.
+        let state = RecordingState::new();
+        state.start_recording().expect("recording starts");
+        state.set_mic_muted(true);
+        assert!(state.is_mic_muted());
+
+        state.stop_recording();
+        assert!(!state.is_mic_muted(), "stopping clears the kill switch");
+
+        state.set_mic_muted(true);
+        state.start_recording().expect("recording restarts");
+        assert!(!state.is_mic_muted(), "starting clears the kill switch");
     }
 }

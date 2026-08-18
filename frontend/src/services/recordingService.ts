@@ -12,6 +12,8 @@ export interface RecordingState {
   is_recording: boolean;
   is_paused: boolean;
   is_active: boolean;
+  /** Manual microphone kill switch — mic samples are discarded while true. */
+  is_mic_muted: boolean;
   recording_duration: number | null;
   active_duration: number | null;
 }
@@ -105,6 +107,24 @@ export class RecordingService {
     return invoke('resume_recording');
   }
 
+  /**
+   * Engage or release the microphone kill switch.
+   *
+   * Unlike pausing, the recording and system audio keep running — only
+   * microphone samples stop being captured, so nothing from the mic is
+   * recorded, transcribed, or saved for as long as this is engaged.
+   */
+  async setMicrophoneMuted(muted: boolean): Promise<void> {
+    return invoke('set_microphone_muted', { muted });
+  }
+
+  /**
+   * Whether the microphone kill switch is currently engaged
+   */
+  async isMicrophoneMuted(): Promise<boolean> {
+    return invoke<boolean>('is_microphone_muted');
+  }
+
   // Event Listeners
 
   /**
@@ -143,6 +163,17 @@ export class RecordingService {
    */
   async onRecordingResumed(callback: () => void): Promise<UnlistenFn> {
     return listen('recording-resumed', callback);
+  }
+
+  /**
+   * Listen for microphone-muted event (kill switch engaged or released)
+   * @param callback - Receives the new muted state
+   * @returns Promise that resolves to unlisten function
+   */
+  async onMicrophoneMuted(callback: (muted: boolean) => void): Promise<UnlistenFn> {
+    return listen<{ muted: boolean }>('microphone-muted', (event) => {
+      callback(event.payload.muted);
+    });
   }
 
   /**

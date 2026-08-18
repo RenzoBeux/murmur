@@ -2,7 +2,7 @@ import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptVie
 import { PermissionWarning } from '@/components/PermissionWarning';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, GlobeIcon } from 'lucide-react';
+import { Copy, GlobeIcon, Sparkles } from 'lucide-react';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
@@ -23,12 +23,16 @@ interface TranscriptPanelProps {
   isProcessingStop: boolean;
   isStopping: boolean;
   showModal: (name: ModalType, message?: string) => void;
+  isAskAiOpen: boolean;
+  onToggleAskAi: () => void;
 }
 
 export function TranscriptPanel({
   isProcessingStop,
   isStopping,
-  showModal
+  showModal,
+  isAskAiOpen,
+  onToggleAskAi
 }: TranscriptPanelProps) {
   // Contexts
   const { transcripts, transcriptContainerRef, copyTranscript } = useTranscripts();
@@ -50,7 +54,7 @@ export function TranscriptPanel({
   );
 
   return (
-    <div ref={transcriptContainerRef} className="w-full bg-background flex flex-col overflow-y-auto custom-scrollbar">
+    <div ref={transcriptContainerRef} className="flex-1 min-w-0 w-full bg-background flex flex-col overflow-y-auto custom-scrollbar">
       {/* Title area - Sticky header */}
       <div className="sticky top-0 z-10 bg-background/80 backdrop-blur p-4">
         <div className="flex flex-col space-y-3">
@@ -83,6 +87,17 @@ export function TranscriptPanel({
                     </span>
                   </Button>
                 }
+                <Button
+                  variant={isAskAiOpen ? "default" : "outline"}
+                  size="sm"
+                  onClick={onToggleAskAi}
+                  title="Ask AI about this meeting"
+                >
+                  <Sparkles />
+                  <span className='hidden md:inline'>
+                    Ask AI
+                  </span>
+                </Button>
               </ButtonGroup>
             </div>
           </div>

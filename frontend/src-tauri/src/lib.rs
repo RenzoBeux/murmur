@@ -675,6 +675,12 @@ pub fn run() {
             api::chat_api::api_send_chat_message,
             api::chat_api::api_get_chat_history,
             api::chat_api::api_clear_chat_history,
+            api::chat_api::api_list_chat_threads,
+            api::chat_api::api_create_chat_thread,
+            api::chat_api::api_delete_chat_thread,
+            api::chat_api::api_send_live_chat_message,
+            api::chat_api::api_get_live_chat_history,
+            api::chat_api::api_clear_live_chat_history,
             // Attachment commands
             api::attachments_api::api_add_attachments,
             api::attachments_api::api_add_attachments_from_paths,

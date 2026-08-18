@@ -7,6 +7,25 @@ export interface Message {
 export interface ChatMessage {
   id: string;
   meeting_id: string;
+  thread_id?: string | null;
+  role: 'user' | 'assistant';
+  content: string;
+  created_at: string;
+}
+
+// A chat conversation within a meeting. origin 'live' = carried over from an
+// Ask-AI session during recording; 'post' = created from the Chat tab.
+export interface ChatThread {
+  id: string;
+  meeting_id: string;
+  title: string;
+  origin: 'live' | 'post';
+  created_at: string;
+}
+
+// A message in the in-memory Ask-AI conversation during a live recording.
+export interface LiveChatMessage {
+  id: string;
   role: 'user' | 'assistant';
   content: string;
   created_at: string;

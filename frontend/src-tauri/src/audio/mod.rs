@@ -23,6 +23,7 @@ pub mod pipeline;
 pub mod stream;
 pub mod recording_manager;
 pub mod recording_commands;
+pub mod live_chat;         // In-memory Ask-AI conversation during a recording
 pub mod recording_preferences;
 pub mod recording_saver;
 pub mod incremental_saver;  // NEW: Incremental audio saving with checkpoints

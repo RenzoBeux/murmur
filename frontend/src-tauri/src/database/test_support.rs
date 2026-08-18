@@ -64,6 +64,7 @@ mod tests {
             ("transcripts", "speaker"),
             ("transcripts", "audio_start_time"),
             ("summary_processes", "result_backup"),
+            ("chat_messages", "thread_id"),
         ] {
             assert!(
                 column_exists(&pool, table, column).await,
@@ -74,6 +75,7 @@ mod tests {
         for table in [
             "meeting_notes",
             "chat_messages",
+            "chat_threads",
             "search_index",
             "meeting_tags",
             "meeting_attachments",

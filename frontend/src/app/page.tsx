@@ -11,6 +11,7 @@ import { useConfig } from '@/contexts/ConfigContext';
 import { StatusOverlays } from '@/app/_components/StatusOverlays';
 import { SettingsModals } from './_components/SettingsModal';
 import { TranscriptPanel } from './_components/TranscriptPanel';
+import { LiveChatPanel } from './_components/LiveChatPanel';
 import { useModalState } from '@/hooks/useModalState';
 import { useRecordingStateSync } from '@/hooks/useRecordingStateSync';
 import { LanguageQuickPick } from '@/components/LanguageQuickPick';
@@ -31,6 +32,18 @@ export default function Home() {
   const [isRecording, setIsRecordingState] = useState(false);
   const [barHeights, setBarHeights] = useState<string[]>(() => Array(WAVEFORM_BAR_COUNT).fill('4px'));
   const [showRecoveryDialog, setShowRecoveryDialog] = useState(false);
+  // Ask-AI side panel. sessionStorage keeps it open across a webview reload
+  // mid-recording, matching the transcript's own rehydration.
+  const [showAskAi, setShowAskAi] = useState(
+    () => typeof window !== 'undefined' && sessionStorage.getItem('ask_ai_panel_open') === '1'
+  );
+  const toggleAskAi = () => {
+    setShowAskAi((prev) => {
+      const next = !prev;
+      sessionStorage.setItem('ask_ai_panel_open', next ? '1' : '0');
+      return next;
+    });
+  };
 
   // Use contexts for state management
   const { meetingTitle } = useTranscripts();
@@ -294,7 +307,16 @@ export default function Home() {
           isProcessingStop={isProcessingStop}
           isStopping={isStopping}
           showModal={showModal}
+          isAskAiOpen={showAskAi}
+          onToggleAskAi={toggleAskAi}
         />
+
+        {/* Ask AI side panel — mirrors the meeting-details two-column layout */}
+        {showAskAi && (
+          <div className="w-[380px] xl:w-[420px] shrink-0 border-l border-border flex flex-col">
+            <LiveChatPanel onClose={toggleAskAi} />
+          </div>
+        )}
 
         {/* Recording controls - only show when permissions are granted or already recording and not showing status messages */}
         {(hasMicrophone || isRecording) &&

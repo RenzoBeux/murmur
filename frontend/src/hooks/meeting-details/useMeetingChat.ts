@@ -5,26 +5,33 @@ import { ChatMessage } from '@/types';
 
 interface UseMeetingChatProps {
   meetingId: string;
+  /** null = no thread yet; the panel creates one lazily on the first send. */
+  threadId: string | null;
   provider: string;
   model: string;
 }
 
-export function useMeetingChat({ meetingId, provider, model }: UseMeetingChatProps) {
+export function useMeetingChat({ meetingId, threadId, provider, model }: UseMeetingChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const meetingIdRef = useRef(meetingId);
-  meetingIdRef.current = meetingId;
+  // Guards stale async results after switching meeting or thread.
+  const contextKeyRef = useRef(`${meetingId}/${threadId ?? ''}`);
+  contextKeyRef.current = `${meetingId}/${threadId ?? ''}`;
 
   const loadHistory = useCallback(async () => {
-    if (!meetingId) return;
+    if (!meetingId || !threadId) {
+      setMessages([]);
+      return;
+    }
+    const contextKey = `${meetingId}/${threadId}`;
     setIsLoadingHistory(true);
     setError(null);
     try {
-      const history = await invoke<ChatMessage[]>('api_get_chat_history', { meetingId });
-      if (meetingIdRef.current === meetingId) {
+      const history = await invoke<ChatMessage[]>('api_get_chat_history', { meetingId, threadId });
+      if (contextKeyRef.current === contextKey) {
         setMessages(history ?? []);
       }
     } catch (err) {
@@ -34,7 +41,7 @@ export function useMeetingChat({ meetingId, provider, model }: UseMeetingChatPro
     } finally {
       setIsLoadingHistory(false);
     }
-  }, [meetingId]);
+  }, [meetingId, threadId]);
 
   useEffect(() => {
     setMessages([]);
@@ -42,9 +49,12 @@ export function useMeetingChat({ meetingId, provider, model }: UseMeetingChatPro
   }, [loadHistory]);
 
   const sendMessage = useCallback(
-    async (text: string) => {
+    async (text: string, threadIdOverride?: string) => {
       const trimmed = text.trim();
-      if (!trimmed || !meetingId || isSending) return;
+      // The override lets a caller send into a thread it just created, before
+      // the selectedThreadId state update has propagated.
+      const targetThreadId = threadIdOverride ?? threadId;
+      if (!trimmed || !meetingId || !targetThreadId || isSending) return;
       if (!provider || !model) {
         toast.error('Pick a model in the chat header before sending.');
         return;
@@ -53,6 +63,7 @@ export function useMeetingChat({ meetingId, provider, model }: UseMeetingChatPro
       const optimisticUser: ChatMessage = {
         id: `tmp-${Date.now()}`,
         meeting_id: meetingId,
+        thread_id: targetThreadId,
         role: 'user',
         content: trimmed,
         created_at: new Date().toISOString(),
@@ -61,14 +72,16 @@ export function useMeetingChat({ meetingId, provider, model }: UseMeetingChatPro
       setIsSending(true);
       setError(null);
 
+      const contextKey = `${meetingId}/${targetThreadId}`;
       try {
         const reply = await invoke<ChatMessage>('api_send_chat_message', {
           meetingId,
+          threadId: targetThreadId,
           message: trimmed,
           provider,
           model,
         });
-        if (meetingIdRef.current === meetingId) {
+        if (contextKeyRef.current === contextKey) {
           setMessages((prev) => [...prev, reply]);
         }
       } catch (err) {
@@ -81,13 +94,13 @@ export function useMeetingChat({ meetingId, provider, model }: UseMeetingChatPro
         setIsSending(false);
       }
     },
-    [meetingId, isSending, provider, model]
+    [meetingId, threadId, isSending, provider, model]
   );
 
   const clearChat = useCallback(async () => {
-    if (!meetingId) return;
+    if (!meetingId || !threadId) return;
     try {
-      await invoke('api_clear_chat_history', { meetingId });
+      await invoke('api_clear_chat_history', { meetingId, threadId });
       setMessages([]);
       setError(null);
       toast.success('Chat cleared');
@@ -96,7 +109,7 @@ export function useMeetingChat({ meetingId, provider, model }: UseMeetingChatPro
       console.error('Failed to clear chat:', err);
       toast.error(`Failed to clear chat: ${msg}`);
     }
-  }, [meetingId]);
+  }, [meetingId, threadId]);
 
   return {
     messages,

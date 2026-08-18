@@ -569,6 +569,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
     IS_RECORDING.store(true, Ordering::SeqCst);
     FATAL_STOP_TRIGGERED.store(false, Ordering::SeqCst); // Reset fatal-stop guard
+    crate::audio::live_chat::clear(); // A new recording never inherits the previous Ask-AI chat
     reset_speech_detected_flag(); // Reset for new recording session
     spawn_recording_supervisor(app.clone()); // real level meters + device events + silence watchdog
     emit_system_audio_unavailable_if_needed(&app, system_requested, system_name_for_event);
@@ -753,6 +754,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
     IS_RECORDING.store(true, Ordering::SeqCst);
     FATAL_STOP_TRIGGERED.store(false, Ordering::SeqCst); // Reset fatal-stop guard
+    crate::audio::live_chat::clear(); // A new recording never inherits the previous Ask-AI chat
     reset_speech_detected_flag(); // Reset for new recording session
     spawn_recording_supervisor(app.clone()); // real level meters + device events + silence watchdog
     emit_system_audio_unavailable_if_needed(&app, system_requested, system_name_for_event);
@@ -845,7 +847,7 @@ async fn resolve_echo_suppression(mode: super::echo_suppression::EchoSuppression
 /// This is also where the echo dedup safety net runs: by this point the segment
 /// list is complete and ordered, so a mic segment can be compared against the
 /// system segment it echoes regardless of which worker finished first.
-fn recording_segments_to_api(
+pub(crate) fn recording_segments_to_api(
     segments: &[super::recording_saver::TranscriptSegment],
 ) -> Vec<crate::api::TranscriptSegment> {
     let converted: Vec<crate::api::TranscriptSegment> = segments
@@ -866,6 +868,41 @@ fn recording_segments_to_api(
         .collect();
 
     super::transcript_dedup::drop_echoed_mic_segments(converted)
+}
+
+/// Persist the live Ask-AI conversation as this meeting's "Live chat" thread and
+/// drain the in-memory store. Non-fatal (log-and-continue), mirroring the
+/// transcript save posture. No-op when nothing was asked during the recording.
+async fn persist_live_chat_thread(pool: &sqlx::SqlitePool, meeting_id: &str) {
+    let messages = crate::audio::live_chat::take_all();
+    if messages.is_empty() {
+        return;
+    }
+    let new_messages: Vec<crate::database::repositories::chat::NewChatMessage> = messages
+        .into_iter()
+        .map(|m| crate::database::repositories::chat::NewChatMessage {
+            role: m.role,
+            content: m.content,
+            created_at: m.created_at,
+        })
+        .collect();
+    match crate::database::repositories::chat::ChatThreadsRepository::create_live_thread_with_messages(
+        pool,
+        meeting_id,
+        &new_messages,
+    )
+    .await
+    {
+        Ok(thread) => info!(
+            "💾 Saved live Ask-AI chat as thread {} ({} messages)",
+            thread.id,
+            new_messages.len()
+        ),
+        Err(e) => error!(
+            "❌ Failed to persist live chat thread for {}: {}",
+            meeting_id, e
+        ),
+    }
 }
 
 /// Best-effort persist of the in-progress recording's transcript at app exit / tray quit.
@@ -927,7 +964,10 @@ pub async fn save_active_recording_on_exit<R: Runtime>(app: &AppHandle<R>) {
     )
     .await
     {
-        Ok(id) => info!("💾 Persisted in-progress meeting on exit: id={}", id),
+        Ok(id) => {
+            info!("💾 Persisted in-progress meeting on exit: id={}", id);
+            persist_live_chat_thread(state.db_manager.pool(), &id).await;
+        }
         Err(e) => error!("❌ Failed to persist meeting on exit: {}", e),
     }
 }
@@ -1243,6 +1283,9 @@ pub async fn stop_recording<R: Runtime>(
                         id,
                         api_segments.len()
                     );
+                    // The meeting row now exists — carry the live Ask-AI
+                    // conversation over as its "Live chat" thread.
+                    persist_live_chat_thread(state.db_manager.pool(), &id).await;
                     saved_meeting_id = Some(id);
                 }
                 Err(e) => {
@@ -1263,6 +1306,12 @@ pub async fn stop_recording<R: Runtime>(
     // Set recording flag to false
     info!("🔍 Setting IS_RECORDING to false");
     IS_RECORDING.store(false, Ordering::SeqCst);
+
+    // A stop that saved no meeting (no segments / save error) discards the live
+    // Ask-AI conversation — it must never leak into the next recording.
+    if saved_meeting_id.is_none() {
+        crate::audio::live_chat::clear();
+    }
 
     // Step 4.5: Prepare metadata for the frontend. The DB row is already written above
     // (saved_meeting_id); the frontend uses these to refresh/navigate, and only falls

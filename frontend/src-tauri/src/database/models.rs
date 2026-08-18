@@ -129,8 +129,22 @@ pub struct MeetingAttachmentModel {
 pub struct ChatMessageModel {
     pub id: String,
     pub meeting_id: String,
+    /// Nullable in the schema (ALTER TABLE limitation); the repositories always
+    /// write it, so None only appears on rows that pre-date the threads migration
+    /// backfill (which should not exist).
+    pub thread_id: Option<String>,
     pub role: String,
     pub content: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct ChatThreadModel {
+    pub id: String,
+    pub meeting_id: String,
+    pub title: String,
+    /// 'live' (carried over from an Ask-AI session during recording) or 'post'.
+    pub origin: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 

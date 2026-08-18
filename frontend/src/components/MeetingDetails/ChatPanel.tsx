@@ -1,131 +1,91 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import { ChevronDown, Loader2, MessageSquare, Send, Sparkles, Trash2 } from 'lucide-react';
+import { useState } from 'react';
+import { ChevronDown, Loader2, MessageSquare, Plus, Sparkles, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useMeetingChat } from '@/hooks/meeting-details/useMeetingChat';
-import { useConfig } from '@/contexts/ConfigContext';
-import { ModelConfig } from '@/services/configService';
-import { ChatMessage } from '@/types';
+import { useChatThreads } from '@/hooks/meeting-details/useChatThreads';
+import { useChatModelSelection } from '@/hooks/useChatModelSelection';
+import { ModelPicker } from '@/components/chat/ModelPicker';
+import { ChatMessageList } from '@/components/chat/ChatMessageList';
+import { ChatComposer } from '@/components/chat/ChatComposer';
+import { ChatThread } from '@/types';
 import { cn } from '@/lib/utils';
-import { toast } from 'sonner';
-import { invoke } from '@tauri-apps/api/core';
 
 interface ChatPanelProps {
   meetingId: string;
   hasTranscripts: boolean;
 }
 
-type ChatProvider = 'ollama' | 'claude' | 'groq' | 'openai' | 'builtin-ai' | 'custom-openai' | 'openrouter' | 'lmstudio' | 'chatgpt-subscription';
-
-const PROVIDER_LABEL: Record<ChatProvider, string> = {
-  ollama: 'Ollama (local)',
-  claude: 'Claude',
-  groq: 'Groq',
-  openai: 'OpenAI',
-  'builtin-ai': 'Built-in AI (local)',
-  'custom-openai': 'Custom OpenAI',
-  openrouter: 'OpenRouter',
-  lmstudio: 'LM Studio (local)',
-  'chatgpt-subscription': 'ChatGPT (subscription)',
-};
-
 export function ChatPanel({ meetingId, hasTranscripts }: ChatPanelProps) {
-  const { modelConfig, setModelConfig, models, modelOptions, providerApiKeys } = useConfig();
+  const { provider, model, ollamaModelNames, modelOptions, providerApiKeys, handlePickModel } =
+    useChatModelSelection();
 
-  const provider = (modelConfig.provider as ChatProvider) || 'ollama';
-  const model = modelConfig.model || '';
+  const {
+    threads,
+    selectedThreadId,
+    setSelectedThreadId,
+    createThread,
+    deleteThread,
+  } = useChatThreads(meetingId);
 
   const { messages, isLoadingHistory, isSending, sendMessage, clearChat } = useMeetingChat({
     meetingId,
+    threadId: selectedThreadId,
     provider,
     model,
   });
 
   const [input, setInput] = useState('');
-  const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    scrollAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages.length, isSending]);
-
-  const handleSubmit = async (e?: FormEvent) => {
-    e?.preventDefault();
+  const handleSend = async () => {
     const text = input.trim();
     if (!text || isSending) return;
     setInput('');
-    await sendMessage(text);
-  };
-
-  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      void handleSubmit();
+    if (selectedThreadId) {
+      await sendMessage(text);
+      return;
     }
+    // Lazy thread creation: the first message of a meeting (or after deleting
+    // every thread) creates its conversation on demand — no empty thread rows.
+    const thread = await createThread();
+    if (!thread) {
+      setInput(text);
+      return;
+    }
+    await sendMessage(text, thread.id);
   };
 
   const handleClear = async () => {
     if (messages.length === 0) return;
-    const ok = window.confirm('Clear the entire chat history for this meeting?');
+    const ok = window.confirm('Clear all messages in this chat?');
     if (ok) await clearChat();
   };
 
-  const persistModelChange = async (next: ModelConfig) => {
-    try {
-      await invoke('api_save_model_config', {
-        provider: next.provider,
-        model: next.model,
-        whisperModel: next.whisperModel,
-        apiKey: next.apiKey ?? null,
-        ollamaEndpoint: next.ollamaEndpoint ?? null,
-        lmStudioEndpoint: next.lmStudioEndpoint ?? null,
-      });
-      const { emit } = await import('@tauri-apps/api/event');
-      await emit('model-config-updated', next);
-    } catch (err) {
-      console.error('Failed to save model config:', err);
-      toast.error('Failed to save model selection');
-    }
+  const handleDeleteThread = async (thread: ChatThread) => {
+    const ok = window.confirm(`Delete "${thread.title}" and all its messages?`);
+    if (ok) await deleteThread(thread.id);
   };
 
-  const handlePickModel = async (nextProvider: ChatProvider, nextModel: string) => {
-    const requiresKey: ChatProvider[] = ['claude', 'groq', 'openai', 'openrouter'];
-    if (requiresKey.includes(nextProvider)) {
-      const key = providerApiKeys[nextProvider as keyof typeof providerApiKeys];
-      if (!key) {
-        toast.error(`No API key for ${PROVIDER_LABEL[nextProvider]}. Add one in Settings first.`);
-        return;
-      }
-    }
-    const next: ModelConfig = {
-      ...modelConfig,
-      provider: nextProvider,
-      model: nextModel,
-    };
-    setModelConfig(next);
-    await persistModelChange(next);
-  };
-
-  const ollamaModelNames = useMemo(() => models.map((m) => m.name), [models]);
+  const selectedThread = threads.find((t) => t.id === selectedThreadId) ?? null;
 
   return (
     <div className="flex h-full flex-col bg-background">
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-          <MessageSquare className="h-4 w-4 text-brand" />
-          <span>Chat with this meeting</span>
-        </div>
+        <ThreadSwitcher
+          threads={threads}
+          selectedThread={selectedThread}
+          onSelect={setSelectedThreadId}
+          onNewThread={() => void createThread()}
+          onDeleteThread={handleDeleteThread}
+        />
         <div className="flex items-center gap-2">
           <ModelPicker
             provider={provider}
@@ -156,222 +116,100 @@ export function ChatPanel({ meetingId, hasTranscripts }: ChatPanelProps) {
         ) : messages.length === 0 ? (
           <EmptyState hasTranscripts={hasTranscripts} onUseSuggestion={(s) => setInput(s)} />
         ) : (
-          <div className="flex flex-col gap-3">
-            {messages.map((msg) => (
-              <MessageBubble key={msg.id} message={msg} />
-            ))}
-            {isSending && (
-              <div className="flex items-center gap-2 self-start rounded-lg bg-muted px-3 py-2 text-sm text-muted-foreground">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                Thinking…
-              </div>
-            )}
-            <div ref={scrollAnchorRef} />
-          </div>
+          <ChatMessageList messages={messages} isSending={isSending} />
         )}
       </div>
 
-      <form onSubmit={handleSubmit} className="border-t border-border bg-muted p-3">
-        <div className="flex items-end gap-2">
-          <Textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={
-              hasTranscripts
-                ? 'Ask anything about this meeting…'
-                : 'No transcript yet — record or import audio first.'
-            }
-            disabled={!hasTranscripts || isSending}
-            rows={2}
-            className="flex-1 resize-none bg-background"
-          />
-          <Button
-            type="submit"
-            size="icon"
-            disabled={!input.trim() || !hasTranscripts || isSending || !model}
-            aria-label="Send message"
-          >
-            {isSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-          </Button>
-        </div>
-        <p className="mt-1 text-[11px] text-muted-foreground/70">Enter to send · Shift+Enter for newline</p>
-      </form>
+      <ChatComposer
+        value={input}
+        onChange={setInput}
+        onSend={() => void handleSend()}
+        placeholder={
+          hasTranscripts
+            ? 'Ask anything about this meeting…'
+            : 'No transcript yet — record or import audio first.'
+        }
+        disabled={!hasTranscripts}
+        sendDisabled={!model}
+        isSending={isSending}
+      />
     </div>
   );
 }
 
-interface ModelPickerProps {
-  provider: ChatProvider;
-  model: string;
-  ollamaModels: string[];
-  modelOptions: Record<string, string[]>;
-  providerApiKeys: { claude: string | null; groq: string | null; openai: string | null; openrouter: string | null };
-  onPick: (provider: ChatProvider, model: string) => void;
-}
-
-function ModelPicker({
-  provider,
-  model,
-  ollamaModels,
-  modelOptions,
-  providerApiKeys,
-  onPick,
-}: ModelPickerProps) {
-  const groups: Array<{ provider: ChatProvider; models: string[]; disabledReason?: string }> = [
-    { provider: 'ollama', models: ollamaModels.length > 0 ? ollamaModels : modelOptions.ollama || [] },
-    {
-      provider: 'claude',
-      models: modelOptions.claude || [],
-      disabledReason: providerApiKeys.claude ? undefined : 'API key required',
-    },
-    {
-      provider: 'groq',
-      models: modelOptions.groq || [],
-      disabledReason: providerApiKeys.groq ? undefined : 'API key required',
-    },
-    {
-      provider: 'openai',
-      models: modelOptions.openai || [],
-      disabledReason: providerApiKeys.openai ? undefined : 'API key required',
-    },
-    {
-      provider: 'builtin-ai',
-      models: modelOptions['builtin-ai'] || [],
-      disabledReason: (modelOptions['builtin-ai'] || []).length === 0
-        ? 'Download a model in Settings'
-        : undefined,
-    },
-  ];
-
-  const label = model ? `${provider}/${model}` : 'Pick a model';
-
+function ThreadSwitcher({
+  threads,
+  selectedThread,
+  onSelect,
+  onNewThread,
+  onDeleteThread,
+}: {
+  threads: ChatThread[];
+  selectedThread: ChatThread | null;
+  onSelect: (threadId: string) => void;
+  onNewThread: () => void;
+  onDeleteThread: (thread: ChatThread) => void;
+}) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm" className="gap-1 text-xs font-normal">
-          <span className="max-w-[180px] truncate">{label}</span>
+        <Button variant="ghost" size="sm" className="gap-2 text-sm font-medium text-muted-foreground">
+          <MessageSquare className="h-4 w-4 text-brand" />
+          <span className="max-w-[160px] truncate">
+            {selectedThread ? selectedThread.title : 'New chat'}
+          </span>
+          {selectedThread?.origin === 'live' && (
+            <span className="rounded-full bg-brand/10 px-1.5 py-0.5 text-[10px] font-medium text-brand">
+              live
+            </span>
+          )}
           <ChevronDown className="h-3.5 w-3.5 opacity-60" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-64 max-h-96 overflow-y-auto">
-        {groups.map((group, idx) => (
-          <div key={group.provider}>
-            {idx > 0 && <DropdownMenuSeparator />}
-            <DropdownMenuLabel className="flex items-center justify-between text-xs uppercase tracking-wide text-muted-foreground">
-              <span>{PROVIDER_LABEL[group.provider]}</span>
-              {group.disabledReason && (
-                <span className="text-[10px] text-warning normal-case tracking-normal">
-                  {group.disabledReason}
+      <DropdownMenuContent align="start" className="w-64 max-h-80 overflow-y-auto">
+        <DropdownMenuItem onSelect={onNewThread} className="gap-2 text-sm">
+          <Plus className="h-4 w-4" />
+          New chat
+        </DropdownMenuItem>
+        {threads.length > 0 && <DropdownMenuSeparator />}
+        {threads.map((thread) => {
+          const isActive = thread.id === selectedThread?.id;
+          return (
+            <DropdownMenuItem
+              key={thread.id}
+              onSelect={() => onSelect(thread.id)}
+              className={cn('group gap-2 text-sm', isActive && 'bg-brand/10 text-brand')}
+            >
+              <div className="flex min-w-0 flex-1 flex-col">
+                <span className="flex items-center gap-1.5 truncate">
+                  {thread.title}
+                  {thread.origin === 'live' && (
+                    <span className="rounded-full bg-brand/10 px-1.5 py-0.5 text-[10px] font-medium text-brand">
+                      live
+                    </span>
+                  )}
                 </span>
-              )}
-            </DropdownMenuLabel>
-            {group.models.length === 0 ? (
-              <div className="px-2 py-1.5 text-xs text-muted-foreground">No models available</div>
-            ) : (
-              group.models.map((m) => {
-                const isActive = group.provider === provider && m === model;
-                return (
-                  <DropdownMenuItem
-                    key={`${group.provider}-${m}`}
-                    disabled={!!group.disabledReason}
-                    onSelect={() => onPick(group.provider, m)}
-                    className={cn('text-sm', isActive && 'bg-brand/10 text-brand')}
-                  >
-                    <span className="truncate">{m}</span>
-                  </DropdownMenuItem>
-                );
-              })
-            )}
-          </div>
-        ))}
+                <span className="text-[11px] text-muted-foreground">
+                  {new Date(thread.created_at).toLocaleDateString()}
+                </span>
+              </div>
+              <button
+                type="button"
+                aria-label={`Delete ${thread.title}`}
+                className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  onDeleteThread(thread);
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </DropdownMenuItem>
+          );
+        })}
       </DropdownMenuContent>
     </DropdownMenu>
-  );
-}
-
-function MessageBubble({ message }: { message: ChatMessage }) {
-  const isUser = message.role === 'user';
-
-  // User messages are short, plain text — keep them as compact right-aligned
-  // bubbles. Assistant replies are markdown and can be long/structured, so they
-  // span the full column width and render as rich markdown.
-  if (isUser) {
-    return (
-      <div className="flex w-full justify-end">
-        <div className="max-w-[85%] whitespace-pre-wrap rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground shadow-sm">
-          {message.content}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex w-full justify-start">
-      <div className="w-full rounded-lg bg-card border border-border px-3 py-2 text-sm text-foreground shadow-sm">
-        <MarkdownContent content={message.content} />
-      </div>
-    </div>
-  );
-}
-
-// Renders assistant markdown with explicit utility classes rather than the
-// `prose` (typography) plugin, for tighter control over chat-bubble spacing.
-const MARKDOWN_COMPONENTS: Parameters<typeof ReactMarkdown>[0]['components'] = {
-  p: ({ children }) => <p className="mb-2 last:mb-0 leading-relaxed">{children}</p>,
-  ul: ({ children }) => <ul className="mb-2 last:mb-0 list-disc space-y-1 pl-5">{children}</ul>,
-  ol: ({ children }) => <ol className="mb-2 last:mb-0 list-decimal space-y-1 pl-5">{children}</ol>,
-  li: ({ children }) => <li className="marker:text-muted-foreground">{children}</li>,
-  h1: ({ children }) => <h1 className="mb-2 mt-1 text-base font-semibold">{children}</h1>,
-  h2: ({ children }) => <h2 className="mb-2 mt-1 text-sm font-semibold">{children}</h2>,
-  h3: ({ children }) => <h3 className="mb-1 mt-1 text-sm font-semibold">{children}</h3>,
-  strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
-  em: ({ children }) => <em className="italic">{children}</em>,
-  a: ({ href, children }) => (
-    <a href={href} target="_blank" rel="noreferrer" className="text-brand underline">
-      {children}
-    </a>
-  ),
-  blockquote: ({ children }) => (
-    <blockquote className="mb-2 border-l-2 border-border pl-3 italic text-muted-foreground">
-      {children}
-    </blockquote>
-  ),
-  hr: () => <hr className="my-3 border-border" />,
-  pre: ({ children }) => (
-    <pre className="mb-2 last:mb-0 overflow-x-auto rounded-md bg-muted p-3 text-xs text-foreground">
-      {children}
-    </pre>
-  ),
-  code: ({ className, children }) => {
-    // Fenced (block) code carries a `language-*` class and is wrapped by <pre>;
-    // leave its styling to <pre>. Everything else is inline code.
-    const isBlock = /language-/.test(className || '');
-    if (isBlock) {
-      return <code className={className}>{children}</code>;
-    }
-    return (
-      <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]">{children}</code>
-    );
-  },
-  table: ({ children }) => (
-    <div className="mb-2 overflow-x-auto">
-      <table className="w-full border-collapse text-xs">{children}</table>
-    </div>
-  ),
-  th: ({ children }) => (
-    <th className="border border-border px-2 py-1 text-left font-semibold">{children}</th>
-  ),
-  td: ({ children }) => <td className="border border-border px-2 py-1">{children}</td>,
-};
-
-function MarkdownContent({ content }: { content: string }) {
-  return (
-    <div className="break-words">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
-        {content}
-      </ReactMarkdown>
-    </div>
   );
 }
 
@@ -396,7 +234,7 @@ function EmptyState({
       </div>
       <div className="max-w-sm text-sm text-muted-foreground">
         {hasTranscripts
-          ? 'Ask follow-up questions about what was said. The assistant has access to the transcript and any generated summary.'
+          ? 'Ask follow-up questions about what was said. The assistant has access to the transcript and any attached files.'
           : 'Record or import a meeting first. Once a transcript exists, you can chat with it here.'}
       </div>
       {hasTranscripts && (

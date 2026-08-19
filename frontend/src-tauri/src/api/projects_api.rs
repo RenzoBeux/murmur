@@ -19,6 +19,9 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    /// Palette slug, or None when the project predates the color picker — the
+    /// UI derives a stable color from the id in that case.
+    pub color: Option<String>,
     #[serde(rename = "createdAt")]
     pub created_at: String,
     #[serde(rename = "updatedAt")]
@@ -34,6 +37,7 @@ impl Project {
             id: model.id,
             name: model.name,
             description: model.description,
+            color: model.color,
             created_at: model.created_at.to_rfc3339(),
             updated_at: model.updated_at.to_rfc3339(),
             meeting_count,
@@ -86,17 +90,18 @@ pub async fn api_create_project<R: Runtime>(
     state: tauri::State<'_, AppState>,
     name: String,
     description: Option<String>,
+    color: Option<String>,
 ) -> Result<Project, String> {
     let pool = state.db_manager.pool();
-    let project = ProjectsRepository::create(pool, &name, description.as_deref())
+    let project = ProjectsRepository::create(pool, &name, description.as_deref(), color.as_deref())
         .await
         .map_err(|e| format!("Failed to create project: {}", e))?;
     log_info!("Created project {} ({})", project.name, project.id);
     Ok(Project::from_model(project, 0))
 }
 
-/// Rename a project and/or replace its description. A None/blank description
-/// clears it.
+/// Rename a project and/or replace its description and accent color. A
+/// None/blank description or color clears it.
 #[tauri::command]
 pub async fn api_update_project<R: Runtime>(
     _app: AppHandle<R>,
@@ -104,10 +109,17 @@ pub async fn api_update_project<R: Runtime>(
     project_id: String,
     name: String,
     description: Option<String>,
+    color: Option<String>,
 ) -> Result<Project, String> {
     let pool = state.db_manager.pool();
-    let project = ProjectsRepository::update(pool, &project_id, &name, description.as_deref())
-        .await
+    let project = ProjectsRepository::update(
+        pool,
+        &project_id,
+        &name,
+        description.as_deref(),
+        color.as_deref(),
+    )
+    .await
         .map_err(|e| format!("Failed to update project: {}", e))?
         .ok_or_else(|| format!("Project not found: {}", project_id))?;
     let count = ProjectsRepository::count_meetings(pool, &project_id)

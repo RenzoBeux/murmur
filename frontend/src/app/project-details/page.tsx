@@ -21,6 +21,7 @@ import { MeetingActionsMenu } from '@/components/MeetingActions/MeetingActionsMe
 import { AddMeetingsDialog } from '@/components/Projects/AddMeetingsDialog';
 import { ProjectFormDialog } from '@/components/Projects/ProjectFormDialog';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
+import { projectClasses } from '@/lib/projectColors';
 import {
   Project,
   ProjectMeeting,
@@ -162,7 +163,9 @@ function ProjectDetailsContent() {
           <div className="mt-3 flex flex-col sm:flex-row sm:items-start gap-3">
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-3">
-                <FolderKanban className="w-6 h-6 text-muted-foreground shrink-0" />
+                <FolderKanban
+                  className={`w-6 h-6 shrink-0 ${projectClasses(project).text}`}
+                />
                 <h1 className="text-3xl font-bold truncate">{project.name}</h1>
               </div>
               {project.description && (
@@ -213,10 +216,14 @@ function ProjectDetailsContent() {
             <ul className="space-y-1.5">
               {meetings.map((meeting) => (
                 <li key={meeting.id}>
-                  <div className="group relative rounded-lg border border-border bg-card hover:bg-accent transition-colors">
+                  <div className="group relative overflow-hidden rounded-lg border border-border bg-card hover:bg-accent transition-colors">
+                    <span
+                      aria-hidden
+                      className={`absolute inset-y-0 left-0 w-1 ${projectClasses(project).solid}`}
+                    />
                     <button
                       onClick={() => router.push(`/meeting-details?id=${meeting.id}`)}
-                      className="w-full text-left p-4 pr-20"
+                      className="w-full text-left p-4 pl-5 pr-20"
                     >
                       <div className="flex items-center gap-4">
                         <div className="flex-1 min-w-0">

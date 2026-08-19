@@ -19,6 +19,9 @@ pub struct ProjectModel {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    /// Palette slug (see `PROJECT_COLORS`), or None for projects that predate
+    /// the color picker — the UI derives one from the id in that case.
+    pub color: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

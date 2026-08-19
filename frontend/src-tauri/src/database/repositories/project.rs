@@ -10,6 +10,7 @@ struct ProjectCountRow {
     id: String,
     name: String,
     description: Option<String>,
+    color: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     meeting_count: i64,
@@ -23,6 +24,7 @@ impl ProjectCountRow {
                 id: self.id,
                 name: self.name,
                 description: self.description,
+                color: self.color,
                 created_at: self.created_at,
                 updated_at: self.updated_at,
             },
@@ -52,6 +54,32 @@ fn clean_description(description: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The accent colors a project can carry. Slugs, not hex values: each maps to a
+/// `--project-*` theme token tuned separately for the light and dark themes,
+/// the same way the speaker palette works. Must stay in sync with
+/// `PROJECT_COLORS` in `frontend/src/lib/projectColors.ts`.
+pub const PROJECT_COLORS: [&str; 8] = [
+    "violet", "blue", "cyan", "teal", "green", "amber", "orange", "rose",
+];
+
+/// Normalize a color choice. None/blank means "unset" — the UI then derives a
+/// stable color from the project id. Anything outside the palette is rejected
+/// rather than stored, so a value that has no theme token can never get in.
+fn clean_color(color: Option<&str>) -> Result<Option<String>, SqlxError> {
+    let Some(color) = color.map(str::trim).filter(|c| !c.is_empty()) else {
+        return Ok(None);
+    };
+    let color = color.to_ascii_lowercase();
+    if !PROJECT_COLORS.contains(&color.as_str()) {
+        return Err(SqlxError::Protocol(format!(
+            "Unknown project color: {} (expected one of {})",
+            color,
+            PROJECT_COLORS.join(", ")
+        )));
+    }
+    Ok(Some(color))
+}
+
 pub struct ProjectsRepository;
 
 impl ProjectsRepository {
@@ -59,19 +87,22 @@ impl ProjectsRepository {
         pool: &SqlitePool,
         name: &str,
         description: Option<&str>,
+        color: Option<&str>,
     ) -> Result<ProjectModel, SqlxError> {
         let name = clean_name(name)?;
         let description = clean_description(description);
+        let color = clean_color(color)?;
         let id = format!("project-{}", Uuid::new_v4());
         let now = Utc::now();
 
         sqlx::query(
-            "INSERT INTO projects (id, name, description, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO projects (id, name, description, color, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(&name)
         .bind(&description)
+        .bind(&color)
         .bind(now)
         .bind(now)
         .execute(pool)
@@ -81,6 +112,7 @@ impl ProjectsRepository {
             id,
             name,
             description,
+            color,
             created_at: now,
             updated_at: now,
         })
@@ -91,7 +123,7 @@ impl ProjectsRepository {
     /// puts it back in its project.
     pub async fn list_with_counts(pool: &SqlitePool) -> Result<Vec<(ProjectModel, i64)>, SqlxError> {
         let rows = sqlx::query_as::<_, ProjectCountRow>(
-            "SELECT p.id, p.name, p.description, p.created_at, p.updated_at, \
+            "SELECT p.id, p.name, p.description, p.color, p.created_at, p.updated_at, \
                     (SELECT COUNT(*) FROM meetings m \
                       WHERE m.project_id = p.id AND m.deleted_at IS NULL) AS meeting_count \
              FROM projects p ORDER BY p.name COLLATE NOCASE",
@@ -103,7 +135,7 @@ impl ProjectsRepository {
 
     pub async fn get(pool: &SqlitePool, id: &str) -> Result<Option<ProjectModel>, SqlxError> {
         sqlx::query_as::<_, ProjectModel>(
-            "SELECT id, name, description, created_at, updated_at FROM projects WHERE id = ?",
+            "SELECT id, name, description, color, created_at, updated_at FROM projects WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(pool)
@@ -133,23 +165,26 @@ impl ProjectsRepository {
         .await
     }
 
-    /// Rename / re-describe a project. Returns the updated row, or None if no
-    /// project has that id. `description: None` clears the description.
+    /// Rename / re-describe / re-color a project. Returns the updated row, or
+    /// None if no project has that id. A None description or color clears it.
     pub async fn update(
         pool: &SqlitePool,
         id: &str,
         name: &str,
         description: Option<&str>,
+        color: Option<&str>,
     ) -> Result<Option<ProjectModel>, SqlxError> {
         let name = clean_name(name)?;
         let description = clean_description(description);
+        let color = clean_color(color)?;
         let now = Utc::now();
 
         let result = sqlx::query(
-            "UPDATE projects SET name = ?, description = ?, updated_at = ? WHERE id = ?",
+            "UPDATE projects SET name = ?, description = ?, color = ?, updated_at = ? WHERE id = ?",
         )
         .bind(&name)
         .bind(&description)
+        .bind(&color)
         .bind(now)
         .bind(id)
         .execute(pool)
@@ -216,7 +251,7 @@ impl ProjectsRepository {
         meeting_id: &str,
     ) -> Result<Option<ProjectModel>, SqlxError> {
         sqlx::query_as::<_, ProjectModel>(
-            "SELECT p.id, p.name, p.description, p.created_at, p.updated_at \
+            "SELECT p.id, p.name, p.description, p.color, p.created_at, p.updated_at \
              FROM projects p JOIN meetings m ON m.project_id = p.id WHERE m.id = ?",
         )
         .bind(meeting_id)
@@ -246,13 +281,14 @@ mod tests {
     async fn create_list_update_and_delete() {
         let pool = migrated_pool().await;
 
-        let zeta = ProjectsRepository::create(&pool, " Zeta ", Some("  "))
+        let zeta = ProjectsRepository::create(&pool, " Zeta ", Some("  "), Some("  "))
             .await
             .unwrap();
         assert_eq!(zeta.name, "Zeta", "name is trimmed");
         assert_eq!(zeta.description, None, "blank description becomes NULL");
+        assert_eq!(zeta.color, None, "blank color becomes NULL");
 
-        let alpha = ProjectsRepository::create(&pool, "alpha", Some("First one"))
+        let alpha = ProjectsRepository::create(&pool, "alpha", Some("First one"), Some("BLUE"))
             .await
             .unwrap();
 
@@ -264,24 +300,36 @@ mod tests {
         );
         assert!(listed.iter().all(|(_, n)| *n == 0));
 
-        let updated = ProjectsRepository::update(&pool, &alpha.id, "Alpha", None)
+        let updated = ProjectsRepository::update(&pool, &alpha.id, "Alpha", None, Some("rose"))
             .await
             .unwrap()
             .expect("project exists");
         assert_eq!(updated.name, "Alpha");
         assert_eq!(updated.description, None, "description can be cleared");
+        assert_eq!(updated.color.as_deref(), Some("rose"), "color can be changed");
         assert_eq!(
             updated.created_at, alpha.created_at,
             "update preserves created_at"
         );
 
-        assert!(ProjectsRepository::update(&pool, "nope", "X", None)
+        assert!(ProjectsRepository::update(&pool, "nope", "X", None, None)
             .await
             .unwrap()
             .is_none());
         assert!(
-            ProjectsRepository::create(&pool, "   ", None).await.is_err(),
+            ProjectsRepository::create(&pool, "   ", None, None).await.is_err(),
             "empty name is rejected"
+        );
+        assert_eq!(
+            alpha.color.as_deref(),
+            Some("blue"),
+            "a palette color is stored lowercased"
+        );
+        assert!(
+            ProjectsRepository::create(&pool, "Bad", None, Some("chartreuse"))
+                .await
+                .is_err(),
+            "a color outside the palette is rejected"
         );
 
         assert!(ProjectsRepository::delete(&pool, &zeta.id).await.unwrap());
@@ -292,7 +340,7 @@ mod tests {
     #[tokio::test]
     async fn assign_meetings_moves_and_unfiles() {
         let pool = migrated_pool().await;
-        let project = ProjectsRepository::create(&pool, "Client X", None)
+        let project = ProjectsRepository::create(&pool, "Client X", None, None)
             .await
             .unwrap();
         for id in ["m1", "m2", "m3"] {
@@ -345,7 +393,7 @@ mod tests {
     #[tokio::test]
     async fn counts_skip_trashed_and_delete_unfiles_meetings() {
         let pool = migrated_pool().await;
-        let project = ProjectsRepository::create(&pool, "Ops", None).await.unwrap();
+        let project = ProjectsRepository::create(&pool, "Ops", None, None).await.unwrap();
         insert_meeting(&pool, "m1").await;
         insert_meeting(&pool, "m2").await;
         ProjectsRepository::assign_meetings(

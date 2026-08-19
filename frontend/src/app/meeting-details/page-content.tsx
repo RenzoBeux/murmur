@@ -19,6 +19,7 @@ import {
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useRouter } from 'next/navigation';
 import { Project, getMeetingProject, onProjectsChanged } from '@/lib/projectsApi';
+import { projectClasses } from '@/lib/projectColors';
 
 // Custom hooks
 import { useAttachments } from '@/hooks/meeting-details/useAttachments';
@@ -288,7 +289,9 @@ export default function PageContent({
           <button
             onClick={() => router.push(`/project-details?id=${project.id}`)}
             title={`Open project "${project.name}"`}
-            className="hidden shrink-0 items-center gap-1.5 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground sm:inline-flex"
+            className={`hidden shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs transition-opacity hover:opacity-80 sm:inline-flex ${
+              projectClasses(project).chip
+            }`}
           >
             <FolderKanban className="h-3 w-3" />
             <span className="max-w-[12rem] truncate">{project.name}</span>

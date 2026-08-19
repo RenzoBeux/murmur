@@ -7,7 +7,8 @@ import { Calendar, Clock, FolderKanban, ListVideo, Search, X } from 'lucide-reac
 import { MeetingActionsMenu } from '@/components/MeetingActions/MeetingActionsMenu';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { groupMeetingsByDate } from '@/lib/meetingGrouping';
-import { listProjects, onProjectsChanged } from '@/lib/projectsApi';
+import { Project, listProjects, onProjectsChanged } from '@/lib/projectsApi';
+import { projectClasses } from '@/lib/projectColors';
 
 interface MeetingRow {
   id: string;
@@ -51,7 +52,7 @@ export default function MeetingsPage() {
   const router = useRouter();
   const { refetchMeetings } = useSidebar();
   const [meetings, setMeetings] = useState<MeetingRow[] | null>(null);
-  const [projectNames, setProjectNames] = useState<Map<string, string>>(new Map());
+  const [projectsById, setProjectsById] = useState<Map<string, Project>>(new Map());
   const [query, setQuery] = useState('');
   // Transcript-content matches from the backend FTS index (id -> snippet).
   const [contentMatches, setContentMatches] = useState<Map<string, string>>(new Map());
@@ -76,12 +77,12 @@ export default function MeetingsPage() {
     }
   }, []);
 
-  // Project names for the card chips, keyed by id. Cheap enough to refetch
-  // alongside the meetings whenever a move happens anywhere in the app.
+  // Projects for the card chips (name + color), keyed by id. Cheap enough to
+  // refetch alongside the meetings whenever a move happens anywhere in the app.
   const loadProjects = useCallback(async () => {
     try {
       const projects = await listProjects();
-      setProjectNames(new Map(projects.map((p) => [p.id, p.name])));
+      setProjectsById(new Map(projects.map((p) => [p.id, p])));
     } catch (e) {
       console.error('Failed to load projects:', e);
     }
@@ -244,7 +245,7 @@ export default function MeetingsPage() {
                   <li key={m.id}>
                     <MeetingCard
                       m={m}
-                      projectName={m.projectId ? projectNames.get(m.projectId) : undefined}
+                      project={m.projectId ? projectsById.get(m.projectId) : undefined}
                       onClick={() => router.push(`/meeting-details?id=${m.id}`)}
                       onRenamed={handleRenamed}
                       onTrashed={handleTrashed}
@@ -266,7 +267,7 @@ export default function MeetingsPage() {
                       <li key={m.id}>
                         <MeetingCard
                           m={m}
-                          projectName={m.projectId ? projectNames.get(m.projectId) : undefined}
+                          project={m.projectId ? projectsById.get(m.projectId) : undefined}
                           onClick={() => router.push(`/meeting-details?id=${m.id}`)}
                           onRenamed={handleRenamed}
                           onTrashed={handleTrashed}
@@ -287,14 +288,14 @@ export default function MeetingsPage() {
 
 function MeetingCard({
   m,
-  projectName,
+  project,
   onClick,
   onRenamed,
   onTrashed,
   onRestored,
 }: {
   m: SearchHit;
-  projectName?: string;
+  project?: Project;
   onClick: () => void;
   onRenamed: (meetingId: string, newTitle: string) => void;
   onTrashed: (meetingId: string) => void;
@@ -308,10 +309,14 @@ function MeetingCard({
         <div className="flex items-center gap-4">
           <div className="flex-1 min-w-0">
             <p className="font-medium truncate">{m.title}</p>
-            {projectName && (
-              <span className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+            {project && (
+              <span
+                className={`mt-1 inline-flex max-w-full items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs ${
+                  projectClasses(project).chip
+                }`}
+              >
                 <FolderKanban className="w-3 h-3 shrink-0" />
-                <span className="truncate">{projectName}</span>
+                <span className="truncate">{project.name}</span>
               </span>
             )}
           </div>

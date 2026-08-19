@@ -62,6 +62,7 @@ mod tests {
             ("meetings", "attendees"),
             ("meetings", "deleted_at"),
             ("meetings", "project_id"),
+            ("projects", "color"),
             ("transcripts", "speaker"),
             ("transcripts", "audio_start_time"),
             ("summary_processes", "result_backup"),

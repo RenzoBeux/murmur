@@ -8,6 +8,11 @@ export interface Project {
   id: string;
   name: string;
   description: string | null;
+  /**
+   * Palette slug (see `projectColors.ts`), or null for projects created before
+   * the picker existed — the UI derives a stable color from the id then.
+   */
+  color: string | null;
   createdAt: string;
   updatedAt: string;
   /** Live (non-trashed) meetings filed under this project. */
@@ -44,19 +49,29 @@ export async function getProject(projectId: string): Promise<Project> {
   return invoke<Project>('api_get_project', { projectId });
 }
 
-export async function createProject(name: string, description?: string | null): Promise<Project> {
-  return invoke<Project>('api_create_project', { name, description: description ?? null });
+export async function createProject(
+  name: string,
+  description?: string | null,
+  color?: string | null,
+): Promise<Project> {
+  return invoke<Project>('api_create_project', {
+    name,
+    description: description ?? null,
+    color: color ?? null,
+  });
 }
 
 export async function updateProject(
   projectId: string,
   name: string,
   description?: string | null,
+  color?: string | null,
 ): Promise<Project> {
   return invoke<Project>('api_update_project', {
     projectId,
     name,
     description: description ?? null,
+    color: color ?? null,
   });
 }
 

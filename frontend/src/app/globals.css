@@ -143,6 +143,19 @@
     --speaker-4: 210 90% 68%;
     --speaker-5: 275 80% 72%;
     --speaker-6: 15 85% 66%;
+
+    /* Project accent palette — same idea as the speaker palette: hue-stable
+       across themes, used as bg-project-N (solid dot/rail) and
+       bg-project-N/15 text-project-N (tinted chip). Red stays reserved for
+       recording/destructive. */
+    --project-violet: 247 95% 74%;
+    --project-blue: 212 90% 68%;
+    --project-cyan: 190 80% 62%;
+    --project-teal: 172 65% 55%;
+    --project-green: 145 60% 58%;
+    --project-amber: 40 90% 62%;
+    --project-orange: 18 85% 66%;
+    --project-rose: 332 80% 70%;
   }
 
   .light {
@@ -196,6 +209,15 @@
     --speaker-4: 212 80% 42%;
     --speaker-5: 275 60% 46%;
     --speaker-6: 16 80% 42%;
+
+    --project-violet: 247 70% 50%;
+    --project-blue: 212 80% 42%;
+    --project-cyan: 192 85% 34%;
+    --project-teal: 174 70% 30%;
+    --project-green: 148 60% 30%;
+    --project-amber: 34 90% 36%;
+    --project-orange: 18 80% 42%;
+    --project-rose: 332 70% 44%;
   }
 }
 

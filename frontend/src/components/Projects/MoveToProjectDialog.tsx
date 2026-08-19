@@ -14,6 +14,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ProjectFormDialog } from '@/components/Projects/ProjectFormDialog';
+import { projectClasses } from '@/lib/projectColors';
 import {
   Project,
   assignMeetingsToProject,
@@ -170,6 +171,10 @@ export function MoveToProjectDialog({
                           : 'border-border hover:bg-accent'
                       }`}
                     >
+                      <span
+                        aria-hidden
+                        className={`h-2.5 w-2.5 shrink-0 rounded-full ${projectClasses(project).solid}`}
+                      />
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium truncate">{project.name}</p>
                         <p className="text-xs text-muted-foreground">

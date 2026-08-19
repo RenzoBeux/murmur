@@ -14,6 +14,13 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import {
+  PROJECT_COLORS,
+  PROJECT_COLOR_LABELS,
+  ProjectColor,
+  projectColorClasses,
+  resolveProjectColor,
+} from '@/lib/projectColors';
+import {
   Project,
   createProject,
   notifyProjectsChanged,
@@ -30,7 +37,7 @@ interface ProjectFormDialogProps {
   onSaved?: (project: Project) => void;
 }
 
-/** Create or rename a project — the same two fields either way. */
+/** Create or rename a project — the same three fields either way. */
 export function ProjectFormDialog({
   open,
   onOpenChange,
@@ -41,15 +48,23 @@ export function ProjectFormDialog({
   const isEditing = project !== null;
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [color, setColor] = useState<ProjectColor>(PROJECT_COLORS[0]);
   const [isSaving, setIsSaving] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
 
   // Reseed from the project (or the prefill) each time the dialog opens, so a
-  // cancelled edit never leaks its draft into the next one.
+  // cancelled edit never leaks its draft into the next one. A new project gets
+  // an arbitrary palette slot preselected so consecutive projects don't all
+  // come out the same color; the user can pick another before saving.
   useEffect(() => {
     if (!open) return;
     setName(project?.name ?? initialName);
     setDescription(project?.description ?? '');
+    setColor(
+      project
+        ? resolveProjectColor(project)
+        : PROJECT_COLORS[Math.floor(Math.random() * PROJECT_COLORS.length)],
+    );
     const focus = () => {
       nameRef.current?.focus();
       nameRef.current?.select();
@@ -69,8 +84,8 @@ export function ProjectFormDialog({
     setIsSaving(true);
     try {
       const saved = isEditing
-        ? await updateProject(project!.id, trimmed, description)
-        : await createProject(trimmed, description);
+        ? await updateProject(project!.id, trimmed, description, color)
+        : await createProject(trimmed, description, color);
       notifyProjectsChanged();
       onSaved?.(saved);
       onOpenChange(false);
@@ -112,6 +127,32 @@ export function ProjectFormDialog({
             placeholder="What is this project about? (optional)"
             rows={3}
           />
+          <div>
+            <p className="mb-2 text-xs font-medium text-muted-foreground">Color</p>
+            <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Project color">
+              {PROJECT_COLORS.map((option) => {
+                const isSelected = option === color;
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    role="radio"
+                    aria-checked={isSelected}
+                    aria-label={PROJECT_COLOR_LABELS[option]}
+                    title={PROJECT_COLOR_LABELS[option]}
+                    onClick={() => setColor(option)}
+                    className={`h-7 w-7 rounded-full transition-transform outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                      projectColorClasses(option).solid
+                    } ${
+                      isSelected
+                        ? 'ring-2 ring-offset-2 ring-offset-background ring-foreground/60 scale-110'
+                        : 'hover:scale-110'
+                    }`}
+                  />
+                );
+              })}
+            </div>
+          </div>
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={isSaving}>

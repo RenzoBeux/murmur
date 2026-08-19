@@ -5,6 +5,10 @@ module.exports = {
     './src/pages/**/*.{js,ts,jsx,tsx,mdx}',
     './src/components/**/*.{js,ts,jsx,tsx,mdx}',
     './src/app/**/*.{js,ts,jsx,tsx,mdx}',
+    // src/lib holds literal class strings for the palettes that are picked at
+    // runtime (speakerLabel.ts, projectColors.ts). Without this glob those
+    // utilities are purged and the chips render uncolored.
+    './src/lib/**/*.{js,ts,jsx,tsx,mdx}',
   ],
   theme: {
   	extend: {
@@ -88,6 +92,16 @@ module.exports = {
   				'4': 'hsl(var(--speaker-4) / <alpha-value>)',
   				'5': 'hsl(var(--speaker-5) / <alpha-value>)',
   				'6': 'hsl(var(--speaker-6) / <alpha-value>)'
+  			},
+  			project: {
+  				violet: 'hsl(var(--project-violet) / <alpha-value>)',
+  				blue: 'hsl(var(--project-blue) / <alpha-value>)',
+  				cyan: 'hsl(var(--project-cyan) / <alpha-value>)',
+  				teal: 'hsl(var(--project-teal) / <alpha-value>)',
+  				green: 'hsl(var(--project-green) / <alpha-value>)',
+  				amber: 'hsl(var(--project-amber) / <alpha-value>)',
+  				orange: 'hsl(var(--project-orange) / <alpha-value>)',
+  				rose: 'hsl(var(--project-rose) / <alpha-value>)'
   			},
   			chart: {
   				'1': 'hsl(var(--chart-1) / <alpha-value>)',

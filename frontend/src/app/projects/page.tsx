@@ -14,6 +14,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { ProjectFormDialog } from '@/components/Projects/ProjectFormDialog';
+import { projectClasses } from '@/lib/projectColors';
 import {
   Project,
   deleteProject,
@@ -127,12 +128,23 @@ export default function ProjectsPage() {
             <ul className="grid gap-3 sm:grid-cols-2">
               {projects.map((project) => (
                 <li key={project.id}>
-                  <div className="group relative h-full rounded-lg border border-border bg-card hover:bg-accent transition-colors">
+                  <div className="group relative h-full overflow-hidden rounded-lg border border-border bg-card hover:bg-accent transition-colors">
+                    {/* Color rail down the left edge — the fastest way to tell
+                        projects apart when scanning the grid. */}
+                    <span
+                      aria-hidden
+                      className={`absolute inset-y-0 left-0 w-1 ${projectClasses(project).solid}`}
+                    />
                     <button
                       onClick={() => router.push(`/project-details?id=${project.id}`)}
-                      className="w-full h-full text-left p-4 pr-12"
+                      className="w-full h-full text-left p-4 pl-5 pr-12"
                     >
-                      <p className="font-medium truncate">{project.name}</p>
+                      <span className="flex items-center gap-2">
+                        <FolderKanban
+                          className={`w-4 h-4 shrink-0 ${projectClasses(project).text}`}
+                        />
+                        <span className="font-medium truncate">{project.name}</span>
+                      </span>
                       <p className="mt-1 text-sm text-muted-foreground line-clamp-2 min-h-[1.25rem]">
                         {project.description ?? ''}
                       </p>

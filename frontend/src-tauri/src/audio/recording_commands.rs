@@ -83,6 +83,71 @@ static TRANSCRIPTION_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 // Listener ID for proper cleanup - prevents microphone from staying active after recording stops
 static TRANSCRIPT_LISTENER_ID: Mutex<Option<tauri::EventId>> = Mutex::new(None);
 
+// Dedicated transcript writer: the transcript-update listener only parses + channel-sends
+// (it runs synchronously on the transcription worker's emit path, inside Tauri's global
+// listeners mutex), and this thread does the upsert + jsonl append/fsync. It owns its own
+// Arc handles, so it keeps persisting even while the manager is temporarily taken out of
+// RECORDING_MANAGER (stop flush, device reconnect) — and no command ever waits on file
+// I/O through that mutex.
+static TRANSCRIPT_WRITER_TX: Mutex<Option<std::sync::mpsc::Sender<crate::audio::recording_saver::TranscriptSegment>>> =
+    Mutex::new(None);
+static TRANSCRIPT_WRITER_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+
+/// Spawn the transcript writer thread for a new recording session. Tears down any
+/// leftover writer from a previous session first.
+fn spawn_transcript_writer(
+    segments: std::sync::Arc<Mutex<Vec<crate::audio::recording_saver::TranscriptSegment>>>,
+    folder: Option<std::path::PathBuf>,
+) {
+    shutdown_transcript_writer_blocking();
+
+    let (tx, rx) = std::sync::mpsc::channel::<crate::audio::recording_saver::TranscriptSegment>();
+    let handle = std::thread::spawn(move || {
+        use crate::audio::recording_saver::{append_transcript_jsonl, full_sync_transcript_jsonl, upsert_transcript_segment};
+        const FULL_SYNC_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+        let mut last_full_sync = std::time::Instant::now();
+        while let Ok(segment) = rx.recv() {
+            upsert_transcript_segment(&segments, &segment);
+            if let Some(folder) = folder.as_ref() {
+                // Cheap barrier per segment; a periodic full sync bounds the window a
+                // crash could lose to ~5s of transcript text (audio is saved separately).
+                if let Err(e) = append_transcript_jsonl(folder, &segment, false) {
+                    warn!("Transcript writer: jsonl append failed: {}", e);
+                }
+                if last_full_sync.elapsed() >= FULL_SYNC_EVERY {
+                    if let Err(e) = full_sync_transcript_jsonl(folder) {
+                        warn!("Transcript writer: periodic full sync failed: {}", e);
+                    }
+                    last_full_sync = std::time::Instant::now();
+                }
+            }
+        }
+        // Channel closed (session ending): final durability barrier.
+        if let Some(folder) = folder.as_ref() {
+            let _ = full_sync_transcript_jsonl(folder);
+        }
+        info!("Transcript writer thread exited");
+    });
+
+    *TRANSCRIPT_WRITER_TX.lock().unwrap() = Some(tx);
+    *TRANSCRIPT_WRITER_HANDLE.lock().unwrap() = Some(handle);
+}
+
+/// Close the writer channel and join the thread. After this returns, every segment sent
+/// so far is in the shared segments vec AND fsync'd to transcripts.jsonl — callers may
+/// safely snapshot the segments for the final save. Blocking: wrap in `spawn_blocking`
+/// when calling from async context.
+fn shutdown_transcript_writer_blocking() {
+    let tx = TRANSCRIPT_WRITER_TX.lock().unwrap().take();
+    drop(tx); // closes the channel; writer drains the queue then exits
+    let handle = TRANSCRIPT_WRITER_HANDLE.lock().unwrap().take();
+    if let Some(handle) = handle {
+        if handle.join().is_err() {
+            error!("Transcript writer thread panicked");
+        }
+    }
+}
+
 // ============================================================================
 // PUBLIC TYPES
 // ============================================================================
@@ -593,6 +658,23 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         *global_task = Some(task_handle);
     }
 
+    // Start the dedicated transcript writer for this session, handing it its own clones
+    // of the segments store + meeting folder so persistence never goes through the
+    // RECORDING_MANAGER mutex (and survives the manager being temporarily taken out).
+    {
+        let handles = {
+            let guard = RECORDING_MANAGER.lock().unwrap();
+            guard
+                .as_ref()
+                .map(|m| (m.transcript_segments_handle(), m.get_meeting_folder()))
+        };
+        if let Some((segments, folder)) = handles {
+            spawn_transcript_writer(segments, folder);
+        } else {
+            warn!("No recording manager available to start transcript writer");
+        }
+    }
+
     // CRITICAL: Listen for transcript-update events and save to recording manager
     // This enables transcript history persistence for page reload sync
     // Store listener ID for cleanup during stop_recording to ensure microphone is released
@@ -614,11 +696,14 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
                     speaker: update.speaker.clone(),
                 };
 
-                // Save to recording manager
-                if let Ok(manager_guard) = RECORDING_MANAGER.lock() {
-                    if let Some(manager) = manager_guard.as_ref() {
-                        manager.add_transcript_segment(segment);
-                    }
+                // Hand off to the dedicated writer thread. Never touch RECORDING_MANAGER
+                // or do file I/O here — this closure runs synchronously on the
+                // transcription worker's emit path inside Tauri's listeners mutex.
+                let tx = TRANSCRIPT_WRITER_TX.lock().unwrap().clone();
+                if let Some(tx) = tx {
+                    let _ = tx.send(segment);
+                } else {
+                    warn!("Transcript writer not running; dropping segment {}", update.sequence_id);
                 }
             }
         });
@@ -778,6 +863,23 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         *global_task = Some(task_handle);
     }
 
+    // Start the dedicated transcript writer for this session, handing it its own clones
+    // of the segments store + meeting folder so persistence never goes through the
+    // RECORDING_MANAGER mutex (and survives the manager being temporarily taken out).
+    {
+        let handles = {
+            let guard = RECORDING_MANAGER.lock().unwrap();
+            guard
+                .as_ref()
+                .map(|m| (m.transcript_segments_handle(), m.get_meeting_folder()))
+        };
+        if let Some((segments, folder)) = handles {
+            spawn_transcript_writer(segments, folder);
+        } else {
+            warn!("No recording manager available to start transcript writer");
+        }
+    }
+
     // CRITICAL: Listen for transcript-update events and save to recording manager
     // This enables transcript history persistence for page reload sync
     // Store listener ID for cleanup during stop_recording to ensure microphone is released
@@ -799,11 +901,14 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
                     speaker: update.speaker.clone(),
                 };
 
-                // Save to recording manager
-                if let Ok(manager_guard) = RECORDING_MANAGER.lock() {
-                    if let Some(manager) = manager_guard.as_ref() {
-                        manager.add_transcript_segment(segment);
-                    }
+                // Hand off to the dedicated writer thread. Never touch RECORDING_MANAGER
+                // or do file I/O here — this closure runs synchronously on the
+                // transcription worker's emit path inside Tauri's listeners mutex.
+                let tx = TRANSCRIPT_WRITER_TX.lock().unwrap().clone();
+                if let Some(tx) = tx {
+                    let _ = tx.send(segment);
+                } else {
+                    warn!("Transcript writer not running; dropping segment {}", update.sequence_id);
                 }
             }
         });
@@ -942,6 +1047,10 @@ pub async fn save_active_recording_on_exit<R: Runtime>(app: &AppHandle<R>) {
         let _ = manager.stop_streams_and_force_flush().await;
         *RECORDING_MANAGER.lock().unwrap() = Some(manager);
     }
+
+    // Drain the transcript writer so queued segments land in the segments vec (and
+    // transcripts.jsonl) before the snapshot below.
+    let _ = tokio::task::spawn_blocking(shutdown_transcript_writer_blocking).await;
 
     // Snapshot from the global manager without removing it (sync methods only; the
     // guard is dropped before any await, so no std mutex is held across .await).
@@ -1149,6 +1258,10 @@ pub async fn stop_recording<R: Runtime>(
             info!("✅ Transcript-update listener removed (after drain)");
         }
     }
+
+    // Step 2.6: Drain and join the transcript writer so every drained-tail segment is in
+    // the segments vec + transcripts.jsonl before Step 4 snapshots them for the save.
+    let _ = tokio::task::spawn_blocking(shutdown_transcript_writer_blocking).await;
 
     // Step 3: Now safely unload Whisper model after ALL chunks are processed
     let _ = app.emit(
@@ -1726,27 +1839,22 @@ pub async fn attempt_device_reconnect(
         _ => return Err(format!("Invalid device type: {}", device_type)),
     };
 
-    // Check if recording is active
-    {
-        let manager_guard = RECORDING_MANAGER.lock().unwrap();
-        if manager_guard.is_none() {
-            return Err("Recording not active".to_string());
-        }
-    } // Release lock
+    // Take-then-return (same pattern as the stop flow): device reconnection can block for
+    // a very long time (Windows device enumeration has been observed at 90+ seconds), and
+    // holding the RECORDING_MANAGER mutex for that duration parks every waiter — including
+    // the UI's 500ms get_recording_state poll, one tokio worker per poll — until the whole
+    // async runtime is starved and ALL commands (search, meeting loads) stop resolving.
+    let taken = { RECORDING_MANAGER.lock().unwrap().take() };
+    let Some(mut manager) = taken else {
+        return Err("Recording not active (or a reconnect/stop is already in progress)".to_string());
+    };
 
-    // Spawn blocking task to handle the async reconnection
-    let result = tokio::task::spawn_blocking(move || {
-        tokio::runtime::Handle::current().block_on(async {
-            let mut manager_guard = RECORDING_MANAGER.lock().unwrap();
-            if let Some(manager) = manager_guard.as_mut() {
-                manager.attempt_device_reconnect(&device_name, monitor_type).await
-            } else {
-                Err(anyhow::anyhow!("Recording not active"))
-            }
-        })
-    })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))?;
+    let result = manager
+        .attempt_device_reconnect(&device_name, monitor_type)
+        .await;
+
+    // Return the manager on BOTH success and failure — dropping it would kill the session.
+    *RECORDING_MANAGER.lock().unwrap() = Some(manager);
 
     match result {
         Ok(success) => {

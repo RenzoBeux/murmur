@@ -49,6 +49,68 @@ pub struct DeviceInfo {
     pub system_audio: Option<String>,
 }
 
+/// Upsert a segment (by `sequence_id`) into a shared segments store. Free function so
+/// the dedicated transcript writer thread can use it while owning only the Arc handle.
+pub fn upsert_transcript_segment(
+    segments: &Mutex<Vec<TranscriptSegment>>,
+    segment: &TranscriptSegment,
+) {
+    if let Ok(mut segments) = segments.lock() {
+        if let Some(existing) = segments.iter_mut().find(|s| s.sequence_id == segment.sequence_id) {
+            *existing = segment.clone();
+            info!("Updated transcript segment {} (seq: {}) - total segments: {}",
+                  segment.id, segment.sequence_id, segments.len());
+        } else {
+            segments.push(segment.clone());
+            info!("Added new transcript segment {} (seq: {}) - total segments: {}",
+                  segment.id, segment.sequence_id, segments.len());
+        }
+    } else {
+        error!("Failed to lock transcript segments for adding segment {}", segment.id);
+    }
+}
+
+/// Append one transcript segment as a JSON line to `transcripts.jsonl`. O(1) per segment;
+/// recovery folds the log by `sequence_id` (see `recovery_scan::read_transcripts_jsonl`),
+/// so re-appending an updated segment is fine.
+///
+/// `full_sync` chooses the durability barrier: `sync_all` is `F_FULLFSYNC` on macOS —
+/// a full disk flush costing tens of ms (worse under concurrent I/O), which froze the
+/// app when issued per segment on the transcription hot path. The writer thread passes
+/// `false` (sync_data = `F_BARRIERFSYNC` on macOS, cheap and still ordered) and issues a
+/// periodic full sync instead.
+pub fn append_transcript_jsonl(
+    folder: &PathBuf,
+    segment: &TranscriptSegment,
+    full_sync: bool,
+) -> Result<()> {
+    use std::io::Write;
+    let path = folder.join("transcripts.jsonl");
+    let mut line = serde_json::to_string(segment)?;
+    line.push('\n');
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    file.write_all(line.as_bytes())?;
+    if full_sync {
+        file.sync_all()?;
+    } else {
+        file.sync_data()?;
+    }
+    Ok(())
+}
+
+/// Full-durability barrier on `transcripts.jsonl` (periodic + final flush for the
+/// writer thread's cheap per-segment syncs).
+pub fn full_sync_transcript_jsonl(folder: &PathBuf) -> Result<()> {
+    let path = folder.join("transcripts.jsonl");
+    if path.exists() {
+        std::fs::OpenOptions::new().append(true).open(&path)?.sync_all()?;
+    }
+    Ok(())
+}
+
 /// New recording saver using incremental saving strategy
 pub struct RecordingSaver {
     incremental_saver: Option<Arc<AsyncMutex<IncrementalAudioSaver>>>,
@@ -95,49 +157,15 @@ impl RecordingSaver {
     }
 
     /// Add or update a structured transcript segment (upserts based on sequence_id)
-    /// Also saves incrementally to disk
+    /// Also saves incrementally to disk. Legacy/cold path — the live-recording path is
+    /// the writer thread in recording_commands, which uses the free functions below.
     pub fn add_transcript_segment(&self, segment: TranscriptSegment) {
-        if let Ok(mut segments) = self.transcript_segments.lock() {
-            // Check if segment with same sequence_id exists (update it)
-            if let Some(existing) = segments.iter_mut().find(|s| s.sequence_id == segment.sequence_id) {
-                *existing = segment.clone();
-                info!("Updated transcript segment {} (seq: {}) - total segments: {}",
-                      segment.id, segment.sequence_id, segments.len());
-            } else {
-                // New segment, add it
-                segments.push(segment.clone());
-                info!("Added new transcript segment {} (seq: {}) - total segments: {}",
-                      segment.id, segment.sequence_id, segments.len());
-            }
-        } else {
-            error!("Failed to lock transcript segments for adding segment {}", segment.id);
-        }
-
-        // Durably append this segment to transcripts.jsonl (O(1) + fsync per segment).
-        // This is the crash-recovery source; the pretty transcripts.json is written once
-        // at finalize. Replaces the old O(n^2) full transcripts.json rewrite per segment.
+        upsert_transcript_segment(&self.transcript_segments, &segment);
         if let Some(folder) = &self.meeting_folder {
-            if let Err(e) = self.append_transcript_jsonl(folder, &segment) {
+            if let Err(e) = append_transcript_jsonl(folder, &segment, true) {
                 warn!("Failed to append incremental transcript jsonl: {}", e);
             }
         }
-    }
-
-    /// Append one transcript segment as a JSON line to `transcripts.jsonl`, fsync'd for
-    /// durability. O(1) per segment; recovery folds the log by `sequence_id` (see
-    /// `recovery_scan::read_transcripts_jsonl`).
-    fn append_transcript_jsonl(&self, folder: &PathBuf, segment: &TranscriptSegment) -> Result<()> {
-        use std::io::Write;
-        let path = folder.join("transcripts.jsonl");
-        let mut line = serde_json::to_string(segment)?;
-        line.push('\n');
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
-        file.write_all(line.as_bytes())?;
-        file.sync_all()?;
-        Ok(())
     }
 
     /// Legacy method for backward compatibility - converts text to basic segment

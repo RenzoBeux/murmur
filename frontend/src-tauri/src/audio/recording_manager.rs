@@ -505,6 +505,15 @@ impl RecordingManager {
         self.recording_saver.add_transcript_segment(segment);
     }
 
+    /// Shared handle to the transcript-segments store, for the dedicated writer thread
+    /// (see recording_commands) that persists live segments without holding the
+    /// RECORDING_MANAGER mutex.
+    pub fn transcript_segments_handle(
+        &self,
+    ) -> Arc<std::sync::Mutex<Vec<super::recording_saver::TranscriptSegment>>> {
+        self.recording_saver.transcript_segments_handle()
+    }
+
     /// Add a transcript chunk to be saved later (legacy method)
     pub fn add_transcript_chunk(&self, text: String) {
         self.recording_saver.add_transcript_chunk(text);

@@ -56,8 +56,10 @@ pub fn encode_single_audio(
             "mp4",
             output_path.to_str().unwrap(),
         ])
+        // stdout is unused (the mp4 goes to output_path) — null it rather than pipe
+        // it so ffmpeg can never block on an undrained pipe we forgot to read.
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped());
 
     // Hide console window on Windows to prevent CMD popup during recording
@@ -85,20 +87,35 @@ pub fn encode_single_audio(
         .take()
         .ok_or_else(|| anyhow::anyhow!("Failed to open FFmpeg stdin"))?;
 
+    // Drain stderr on a separate thread WHILE we feed stdin. With multi-MB inputs
+    // (a 30s checkpoint is ~11.5 MB) ffmpeg can fill its stderr pipe buffer before
+    // we finish writing; if nobody reads it, ffmpeg blocks on stderr, we block on
+    // stdin, and both sides deadlock forever — the recording then never finalizes.
+    let stderr_pipe = ffmpeg
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("Failed to open FFmpeg stderr"))?;
+    let stderr_reader = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = String::new();
+        let mut pipe = stderr_pipe;
+        let _ = pipe.read_to_string(&mut buf);
+        buf
+    });
+
+    // write_all can now surface EPIPE if ffmpeg dies early — that's the existing
+    // Err path (caller emits a recording-error) instead of a hang.
     stdin.write_all(data)?;
 
     debug!("Dropping stdin");
     drop(stdin);
     debug!("Waiting for FFmpeg process to exit");
-    let output = ffmpeg
-        .wait_with_output()
+    let status = ffmpeg
+        .wait()
         .map_err(|e| anyhow::anyhow!("Failed to wait for FFmpeg process: {}", e))?;
-    let status = output.status;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr_reader.join().unwrap_or_default();
 
     debug!("FFmpeg process exited with status: {}", status);
-    debug!("FFmpeg stdout: {}", stdout);
     debug!("FFmpeg stderr: {}", stderr);
 
     if !status.success() {

@@ -617,10 +617,11 @@ impl WhisperEngine {
         params.set_max_len(200);
         params.set_single_segment(false);
 
-        // Set thread count based on hardware (if supported by whisper.cpp)
-        if let Some(_max_threads) = adaptive_config.max_threads {
-            // Note: whisper.cpp may or may not expose thread control through params
-            // Removed debug log to reduce I/O overhead in transcription hot path
+        // Set thread count based on hardware. Without this, whisper.cpp falls back to
+        // its own default of min(4, cores) — leaving most of the CPU idle on CPU-only
+        // builds. Harmless on GPU builds (threads only drive the CPU fallback paths).
+        if let Some(max_threads) = adaptive_config.max_threads {
+            params.set_n_threads(max_threads.max(1) as std::os::raw::c_int);
         }
 
         let duration_seconds = audio_data.len() as f64 / 16000.0;

@@ -1001,12 +1001,14 @@ async fn persist_live_chat_thread(pool: &sqlx::SqlitePool, meeting_id: &str) {
             role: m.role,
             content: m.content,
             created_at: m.created_at,
+            metadata: m.metadata,
         })
         .collect();
     match crate::database::repositories::chat::ChatThreadsRepository::create_live_thread_with_messages(
         pool,
         meeting_id,
         &new_messages,
+        &crate::audio::live_chat::grounding_mode(),
     )
     .await
     {

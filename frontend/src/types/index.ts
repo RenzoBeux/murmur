@@ -4,6 +4,39 @@ export interface Message {
   timestamp: string;
 }
 
+// How far past the transcript the assistant may reach when answering. The
+// transcript is the primary source under every mode; they differ only in what
+// happens when the answer is not in it.
+//
+//   transcript_only    strict grounding — refuses to answer from outside
+//   general_knowledge  may use the model's own knowledge, no network calls
+//   web_search         may also run the provider's server-side web search
+//
+// Mirrors `ChatGrounding` in src-tauri/src/api/chat_api.rs.
+export type ChatGrounding = 'transcript_only' | 'general_knowledge' | 'web_search';
+
+// One cited web page behind an answer.
+export interface WebSource {
+  url: string;
+  title?: string;
+  cited_text?: string;
+}
+
+// Recorded on an assistant message: how the answer was produced. Absent on user
+// messages, on plain transcript-only answers, and on anything written before
+// grounding modes existed.
+export interface ChatAnswerMetadata {
+  grounding: {
+    requested: ChatGrounding;
+    // Lower than `requested` when the provider could not do what was asked —
+    // e.g. web search on a local model.
+    effective: ChatGrounding;
+    degraded_reason?: string;
+  };
+  sources?: WebSource[];
+  search_count?: number;
+}
+
 export interface ChatMessage {
   id: string;
   meeting_id: string;
@@ -11,6 +44,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   created_at: string;
+  metadata?: ChatAnswerMetadata;
 }
 
 // A chat conversation within a meeting. origin 'live' = carried over from an
@@ -20,15 +54,19 @@ export interface ChatThread {
   meeting_id: string;
   title: string;
   origin: 'live' | 'post';
+  grounding_mode: ChatGrounding;
   created_at: string;
 }
 
 // A message in the in-memory Ask-AI conversation during a live recording.
+// `metadata` arrives as the raw JSON string the Rust side will persist, unlike
+// ChatMessage where it has already been parsed.
 export interface LiveChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   created_at: string;
+  metadata?: string;
 }
 
 export interface Transcript {

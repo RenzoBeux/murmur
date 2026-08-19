@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, KeyboardEvent } from 'react';
+import { FormEvent, KeyboardEvent, ReactNode } from 'react';
 import { Loader2, Send } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -15,6 +15,12 @@ interface ChatComposerProps {
   /** Extra gate for the send button (e.g. no model picked). */
   sendDisabled?: boolean;
   isSending: boolean;
+  /**
+   * Control rendered on the footer row, left of the keyboard hint — for things
+   * that change what the *next* message does, which belong next to where it is
+   * typed rather than up in the panel header.
+   */
+  leadingControl?: ReactNode;
 }
 
 export function ChatComposer({
@@ -25,6 +31,7 @@ export function ChatComposer({
   disabled,
   sendDisabled,
   isSending,
+  leadingControl,
 }: ChatComposerProps) {
   const handleSubmit = (e?: FormEvent) => {
     e?.preventDefault();
@@ -60,7 +67,12 @@ export function ChatComposer({
           {isSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
         </Button>
       </div>
-      <p className="mt-1 text-[11px] text-muted-foreground/70">Enter to send · Shift+Enter for newline</p>
+      <div className="mt-1 flex items-center justify-between gap-2">
+        {leadingControl ?? <span />}
+        <p className="text-[11px] text-muted-foreground/70">
+          Enter to send · Shift+Enter for newline
+        </p>
+      </div>
     </form>
   );
 }

@@ -688,6 +688,8 @@ pub fn run() {
             api::chat_api::api_list_chat_threads,
             api::chat_api::api_create_chat_thread,
             api::chat_api::api_delete_chat_thread,
+            api::chat_api::api_set_chat_thread_grounding,
+            api::chat_api::api_chat_web_search_support,
             api::chat_api::api_send_live_chat_message,
             api::chat_api::api_get_live_chat_history,
             api::chat_api::api_clear_live_chat_history,

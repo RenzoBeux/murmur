@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
-import { ChatThread } from '@/types';
+import { ChatGrounding, ChatThread } from '@/types';
 
 /**
  * The chat threads (conversations) of a meeting. Threads are listed oldest
@@ -58,6 +58,36 @@ export function useChatThreads(meetingId: string) {
     }
   }, [meetingId]);
 
+  /**
+   * Change how far past the transcript a conversation may reach. Optimistic:
+   * the picker flips immediately and rolls back if the write fails, so a mode
+   * the backend rejected never looks applied.
+   */
+  const setGrounding = useCallback(
+    async (threadId: string, grounding: ChatGrounding) => {
+      if (!meetingId) return;
+      setThreads((prev) =>
+        prev.map((t) => (t.id === threadId ? { ...t, grounding_mode: grounding } : t))
+      );
+      try {
+        await invoke<ChatThread>('api_set_chat_thread_grounding', {
+          meetingId,
+          threadId,
+          grounding,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('Failed to update chat grounding:', err);
+        toast.error(`Failed to change answer scope: ${msg}`);
+        // Re-read rather than remembering the old value: this is also called
+        // immediately after createThread, when the new row is not in `threads`
+        // yet and there is no previous value to restore.
+        void loadThreads();
+      }
+    },
+    [meetingId, loadThreads]
+  );
+
   const deleteThread = useCallback(
     async (threadId: string) => {
       if (!meetingId) return;
@@ -84,6 +114,7 @@ export function useChatThreads(meetingId: string) {
     isLoading,
     createThread,
     deleteThread,
+    setGrounding,
     reloadThreads: loadThreads,
   };
 }

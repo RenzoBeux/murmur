@@ -22,6 +22,7 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -33,6 +34,29 @@ use tauri::{AppHandle, Manager, Runtime};
 use tokio_util::sync::CancellationToken;
 
 use crate::summary::llm_client::ImageInput;
+use crate::summary::web_search::{self, WebSource};
+
+/// Whether this Codex backend has already refused the `web_search` tool.
+///
+/// The endpoint is undocumented, so whether it accepts server-side web search
+/// can't be known ahead of time. The first web-mode request sends the tool; if
+/// it comes back 400, this flips and every later call skips the tool instead of
+/// failing. Deliberately in-memory only: a restart re-probes, so the app picks
+/// up support automatically if OpenAI adds it.
+static WEB_SEARCH_REJECTED: AtomicBool = AtomicBool::new(false);
+
+/// True once this process has seen Codex reject the web search tool.
+pub fn web_search_rejected() -> bool {
+    WEB_SEARCH_REJECTED.load(Ordering::Relaxed)
+}
+
+/// A Codex reply plus whatever it cited.
+#[derive(Debug, Default)]
+pub struct CodexAnswer {
+    pub text: String,
+    pub sources: Vec<WebSource>,
+    pub search_count: u32,
+}
 
 // --- Codex OAuth / endpoint constants (pinned to the Codex CLI) ---
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -507,10 +531,17 @@ fn extract_completed_text(event: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// Parse a buffered SSE body into the final assistant text.
-fn parse_sse(body: &str) -> Result<String, String> {
+/// Parse a buffered SSE body into the final assistant text plus any citations.
+///
+/// Citations arrive two ways depending on how the turn ends: incrementally as
+/// `…annotation.added` events, and again inside the final `response.completed`
+/// payload. Both are collected and de-duplicated, so a truncated stream still
+/// yields whatever sources it managed to emit.
+fn parse_sse(body: &str) -> Result<CodexAnswer, String> {
     let mut out = String::new();
     let mut fallback: Option<String> = None;
+    let mut sources: Vec<WebSource> = Vec::new();
+    let mut search_count = 0u32;
 
     for line in body.lines() {
         let line = line.trim_start();
@@ -531,10 +562,20 @@ fn parse_sse(body: &str) -> Result<String, String> {
                     out.push_str(d);
                 }
             }
+            Some("response.output_text.annotation.added") => {
+                if let Some(annotation) = event.get("annotation") {
+                    sources.extend(web_search::sources_from_annotations(std::slice::from_ref(
+                        annotation,
+                    )));
+                }
+            }
             Some("response.completed") | Some("response.output_item.done") => {
                 if let Some(t) = extract_completed_text(&event) {
                     fallback = Some(t);
                 }
+                let (completed_sources, completed_searches) = extract_completed_sources(&event);
+                sources.extend(completed_sources);
+                search_count = search_count.max(completed_searches);
             }
             Some("response.failed") | Some("error") => {
                 let msg = event
@@ -558,7 +599,46 @@ fn parse_sse(body: &str) -> Result<String, String> {
     if text.trim().is_empty() {
         return Err("La respuesta de ChatGPT vino vacía".to_string());
     }
-    Ok(text.trim().to_string())
+    Ok(CodexAnswer {
+        text: text.trim().to_string(),
+        sources: web_search::dedupe_sources(sources),
+        search_count,
+    })
+}
+
+/// Citations and web-search count carried in a `response.completed` /
+/// `response.output_item.done` event. Handles both the wrapped
+/// (`{response: {output: […]}}`) and bare (`{item: {…}}`) layouts.
+fn extract_completed_sources(event: &serde_json::Value) -> (Vec<WebSource>, u32) {
+    let mut sources = Vec::new();
+    let mut search_count = 0u32;
+
+    let items: Vec<&serde_json::Value> = event
+        .get("response")
+        .and_then(|r| r.get("output"))
+        .and_then(|o| o.as_array())
+        .map(|items| items.iter().collect())
+        .or_else(|| event.get("item").map(|item| vec![item]))
+        .unwrap_or_default();
+
+    for item in items {
+        match item.get("type").and_then(|t| t.as_str()) {
+            Some("web_search_call") => search_count += 1,
+            Some("message") => {
+                let Some(parts) = item.get("content").and_then(|c| c.as_array()) else {
+                    continue;
+                };
+                for part in parts {
+                    if let Some(annotations) = part.get("annotations").and_then(|a| a.as_array()) {
+                        sources.extend(web_search::sources_from_annotations(annotations));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (sources, search_count)
 }
 
 /// Build the Responses-API `input` array: a single user message whose content is
@@ -566,7 +646,7 @@ fn parse_sse(body: &str) -> Result<String, String> {
 /// schema takes `image_url` as a plain string (a data URI here), unlike the
 /// chat/completions `{ "url": ... }` shape. With no images this is byte-for-byte
 /// the old text-only body, so image-less requests are unchanged.
-fn build_codex_input(user_prompt: &str, images: &[ImageInput]) -> serde_json::Value {
+pub(crate) fn build_codex_input(user_prompt: &str, images: &[ImageInput]) -> serde_json::Value {
     let mut content = vec![serde_json::json!({
         "type": "input_text",
         "text": user_prompt,
@@ -588,6 +668,11 @@ fn build_codex_input(user_prompt: &str, images: &[ImageInput]) -> serde_json::Va
 /// endpoint). Vision-capable models (GPT-5.x) can read attached images, which are
 /// sent as `input_image` data URIs; pass an empty slice for a text-only call. If
 /// the endpoint rejects the image payload, the caller's text-only retry recovers.
+///
+/// `web_search` asks the backend for its server-side search tool. Whether Codex
+/// accepts it is unknown until tried, so a rejection degrades to a plain
+/// unsearched answer instead of failing — see `WEB_SEARCH_REJECTED`.
+#[allow(clippy::too_many_arguments)]
 pub async fn generate_via_codex(
     client: &Client,
     model: &str,
@@ -596,11 +681,77 @@ pub async fn generate_via_codex(
     images: &[ImageInput],
     app_data_dir: &Path,
     cancellation_token: Option<&CancellationToken>,
-) -> Result<String, String> {
-    let (token, account_id) = get_valid_token(client, app_data_dir).await?;
+    web_search: bool,
+) -> Result<CodexAnswer, String> {
+    // Only ask for the tool when it's wanted *and* nothing has refused it yet.
+    let want_search = web_search && !web_search_rejected();
+
+    match codex_request(
+        client,
+        model,
+        system_prompt,
+        user_prompt,
+        images,
+        app_data_dir,
+        cancellation_token,
+        want_search,
+    )
+    .await
+    {
+        Ok(answer) => Ok(answer),
+        // The tool is the only thing that changed about this request, so a 4xx
+        // on the first web-mode call is the probe result: remember it and answer
+        // without searching rather than failing the chat turn.
+        Err((status, message)) if want_search && is_rejection(status) => {
+            tracing::warn!(
+                "Codex rejected the web_search tool ({}): {}. Disabling web search for this session.",
+                status.map(|s| s.to_string()).unwrap_or_else(|| "no status".into()),
+                message
+            );
+            WEB_SEARCH_REJECTED.store(true, Ordering::Relaxed);
+            codex_request(
+                client,
+                model,
+                system_prompt,
+                user_prompt,
+                images,
+                app_data_dir,
+                cancellation_token,
+                false,
+            )
+            .await
+            .map_err(|(_, message)| message)
+        }
+        Err((_, message)) => Err(message),
+    }
+}
+
+/// A 4xx means the request itself was malformed for this backend — which, when
+/// the only variable is the tool, means the tool isn't accepted. 5xx and
+/// transport failures are transient and must not poison the probe.
+fn is_rejection(status: Option<u16>) -> bool {
+    matches!(status, Some(code) if (400..500).contains(&code))
+}
+
+/// One Codex call. Errors carry the HTTP status when there was one, so the
+/// caller can tell "this backend refuses the tool" from "the network blipped".
+#[allow(clippy::too_many_arguments)]
+async fn codex_request(
+    client: &Client,
+    model: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    images: &[ImageInput],
+    app_data_dir: &Path,
+    cancellation_token: Option<&CancellationToken>,
+    web_search: bool,
+) -> Result<CodexAnswer, (Option<u16>, String)> {
+    let (token, account_id) = get_valid_token(client, app_data_dir)
+        .await
+        .map_err(|e| (None, e))?;
     let session_id = uuid::Uuid::new_v4().to_string();
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": model,
         "instructions": system_prompt,
         "input": build_codex_input(user_prompt, images),
@@ -610,6 +761,9 @@ pub async fn generate_via_codex(
         "prompt_cache_key": session_id,
         "reasoning": { "effort": "low" }
     });
+    if web_search {
+        body["tools"] = serde_json::json!([{ "type": "web_search" }]);
+    }
 
     let request = client
         .post(RESPONSES_URL)
@@ -627,29 +781,32 @@ pub async fn generate_via_codex(
 
     let response = if let Some(token) = cancellation_token {
         tokio::select! {
-            r = request => r.map_err(|e| format!("Request a ChatGPT falló: {}", e))?,
-            _ = token.cancelled() => return Err("Generación cancelada".to_string()),
+            r = request => r.map_err(|e| (None, format!("Request a ChatGPT falló: {}", e)))?,
+            _ = token.cancelled() => return Err((None, "Generación cancelada".to_string())),
         }
     } else {
         request
             .await
-            .map_err(|e| format!("Request a ChatGPT falló: {}", e))?
+            .map_err(|e| (None, format!("Request a ChatGPT falló: {}", e)))?
     };
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(format!(
-            "El endpoint codex de ChatGPT respondió {}: {}",
-            status, body
+        return Err((
+            Some(status.as_u16()),
+            format!(
+                "El endpoint codex de ChatGPT respondió {}: {}",
+                status, body
+            ),
         ));
     }
 
     let body = response
         .text()
         .await
-        .map_err(|e| format!("Error leyendo la respuesta de ChatGPT: {}", e))?;
-    parse_sse(&body)
+        .map_err(|e| (None, format!("Error leyendo la respuesta de ChatGPT: {}", e)))?;
+    parse_sse(&body).map_err(|e| (None, e))
 }
 
 // -------------------- available models --------------------
@@ -732,14 +889,14 @@ data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hola\"}\n\
 data: {\"type\":\"response.output_text.delta\",\"delta\":\" mundo\"}\n\
 data: {\"type\":\"response.completed\"}\n\
 data: [DONE]\n";
-        assert_eq!(parse_sse(body).unwrap(), "Hola mundo");
+        assert_eq!(parse_sse(body).unwrap().text, "Hola mundo");
     }
 
     #[test]
     fn parse_sse_falls_back_to_completed() {
         let body = "\
 data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Resumen final\"}]}]}}\n";
-        assert_eq!(parse_sse(body).unwrap(), "Resumen final");
+        assert_eq!(parse_sse(body).unwrap().text, "Resumen final");
     }
 
     #[test]

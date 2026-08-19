@@ -16,7 +16,8 @@ import { useChatModelSelection } from '@/hooks/useChatModelSelection';
 import { ModelPicker } from '@/components/chat/ModelPicker';
 import { ChatMessageList } from '@/components/chat/ChatMessageList';
 import { ChatComposer } from '@/components/chat/ChatComposer';
-import { ChatThread } from '@/types';
+import { GroundingPicker } from '@/components/chat/GroundingPicker';
+import { ChatGrounding, ChatThread } from '@/types';
 import { cn } from '@/lib/utils';
 
 interface ChatPanelProps {
@@ -34,6 +35,7 @@ export function ChatPanel({ meetingId, hasTranscripts }: ChatPanelProps) {
     setSelectedThreadId,
     createThread,
     deleteThread,
+    setGrounding,
   } = useChatThreads(meetingId);
 
   const { messages, isLoadingHistory, isSending, sendMessage, clearChat } = useMeetingChat({
@@ -44,6 +46,18 @@ export function ChatPanel({ meetingId, hasTranscripts }: ChatPanelProps) {
   });
 
   const [input, setInput] = useState('');
+
+  const selectedThread = threads.find((t) => t.id === selectedThreadId) ?? null;
+
+  // Before the first message there is no thread yet, so the picker holds the
+  // choice locally and it is applied to the thread as soon as one exists.
+  const [pendingGrounding, setPendingGrounding] = useState<ChatGrounding>('transcript_only');
+  const grounding = selectedThread?.grounding_mode ?? pendingGrounding;
+
+  const handleGroundingChange = (next: ChatGrounding) => {
+    setPendingGrounding(next);
+    if (selectedThreadId) void setGrounding(selectedThreadId, next);
+  };
 
   const handleSend = async () => {
     const text = input.trim();
@@ -60,6 +74,11 @@ export function ChatPanel({ meetingId, hasTranscripts }: ChatPanelProps) {
       setInput(text);
       return;
     }
+    // Carry the scope the user picked before this thread existed. Awaited so the
+    // first question is answered under the mode shown in the picker.
+    if (pendingGrounding !== thread.grounding_mode) {
+      await setGrounding(thread.id, pendingGrounding);
+    }
     await sendMessage(text, thread.id);
   };
 
@@ -73,8 +92,6 @@ export function ChatPanel({ meetingId, hasTranscripts }: ChatPanelProps) {
     const ok = window.confirm(`Delete "${thread.title}" and all its messages?`);
     if (ok) await deleteThread(thread.id);
   };
-
-  const selectedThread = threads.find((t) => t.id === selectedThreadId) ?? null;
 
   return (
     <div className="flex h-full flex-col bg-background">
@@ -134,6 +151,15 @@ export function ChatPanel({ meetingId, hasTranscripts }: ChatPanelProps) {
         disabled={!hasTranscripts}
         sendDisabled={!model}
         isSending={isSending}
+        leadingControl={
+          <GroundingPicker
+            value={grounding}
+            onChange={handleGroundingChange}
+            provider={provider}
+            model={model}
+            disabled={!hasTranscripts}
+          />
+        }
       />
     </div>
   );

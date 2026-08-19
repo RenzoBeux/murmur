@@ -1,12 +1,37 @@
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
-import { LiveChatMessage } from '@/types';
+import { ChatAnswerMetadata, ChatGrounding, LiveChatMessage } from '@/types';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 
 interface UseLiveChatProps {
   provider: string;
   model: string;
+  grounding: ChatGrounding;
+}
+
+/**
+ * A live message with its metadata already parsed. The Rust side hands back the
+ * raw JSON string it will persist, but the renderer wants the object.
+ */
+export type LiveDisplayMessage = Omit<LiveChatMessage, 'metadata'> & {
+  metadata?: ChatAnswerMetadata;
+};
+
+function parseAnswerMetadata(raw?: string): ChatAnswerMetadata | undefined {
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw) as ChatAnswerMetadata;
+  } catch (err) {
+    // Losing a badge is not worth losing the answer.
+    console.error('Ignoring unreadable live chat metadata:', err);
+    return undefined;
+  }
+}
+
+function toDisplayMessage(message: LiveChatMessage): LiveDisplayMessage {
+  const { metadata, ...rest } = message;
+  return { ...rest, metadata: parseAnswerMetadata(metadata) };
 }
 
 /**
@@ -15,9 +40,9 @@ interface UseLiveChatProps {
  * persisted as the meeting's "Live chat" thread at stop); this hook mirrors it
  * into React state and talks to the live chat commands.
  */
-export function useLiveChat({ provider, model }: UseLiveChatProps) {
+export function useLiveChat({ provider, model, grounding }: UseLiveChatProps) {
   const { isRecording } = useRecordingState();
-  const [messages, setMessages] = useState<LiveChatMessage[]>([]);
+  const [messages, setMessages] = useState<LiveDisplayMessage[]>([]);
   const [isSending, setIsSending] = useState(false);
 
   // Rehydrate whenever a recording is active — covers both a fresh start
@@ -28,7 +53,7 @@ export function useLiveChat({ provider, model }: UseLiveChatProps) {
     let cancelled = false;
     invoke<LiveChatMessage[]>('api_get_live_chat_history')
       .then((history) => {
-        if (!cancelled) setMessages(history ?? []);
+        if (!cancelled) setMessages((history ?? []).map(toDisplayMessage));
       })
       .catch((err) => console.error('Failed to load live chat history:', err));
     return () => {
@@ -45,7 +70,7 @@ export function useLiveChat({ provider, model }: UseLiveChatProps) {
         return;
       }
 
-      const optimisticUser: LiveChatMessage = {
+      const optimisticUser: LiveDisplayMessage = {
         id: `tmp-${Date.now()}`,
         role: 'user',
         content: trimmed,
@@ -59,8 +84,9 @@ export function useLiveChat({ provider, model }: UseLiveChatProps) {
           message: trimmed,
           provider,
           model,
+          grounding,
         });
-        setMessages((prev) => [...prev, reply]);
+        setMessages((prev) => [...prev, toDisplayMessage(reply)]);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error('Failed to send live chat message:', err);
@@ -70,7 +96,7 @@ export function useLiveChat({ provider, model }: UseLiveChatProps) {
         setIsSending(false);
       }
     },
-    [isSending, isRecording, provider, model]
+    [isSending, isRecording, provider, model, grounding]
   );
 
   const clearChat = useCallback(async () => {

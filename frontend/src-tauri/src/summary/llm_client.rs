@@ -5,6 +5,8 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+use super::web_search::{self, WebSource};
+
 const REQUEST_TIMEOUT_DURATION: Duration = Duration::from_secs(300);
 
 /// An image attachment ready to send to a vision-capable model.
@@ -14,6 +16,36 @@ pub struct ImageInput {
     pub media_type: String,
     /// Base64-encoded file bytes (no data: prefix).
     pub base64_data: String,
+}
+
+/// Optional per-call knobs. Bundled into a struct because `generate_answer`
+/// already carries a long positional argument list and most callers want none
+/// of these.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LlmExtras {
+    /// Ask the provider for its own server-side web search tool. Silently
+    /// ignored by providers that have none — check `web_search_support` first if
+    /// you need to know whether it will actually happen.
+    pub web_search: bool,
+}
+
+/// A model's answer plus whatever it cited while producing it.
+#[derive(Debug, Clone, Default)]
+pub struct LlmAnswer {
+    pub text: String,
+    /// Empty unless the provider actually searched.
+    pub sources: Vec<WebSource>,
+    /// How many searches the provider ran, when it reports that.
+    pub search_count: u32,
+}
+
+impl LlmAnswer {
+    fn text_only(text: String) -> Self {
+        Self {
+            text,
+            ..Default::default()
+        }
+    }
 }
 
 // Request-side message content. Text-only messages must keep serializing as a
@@ -143,30 +175,19 @@ pub struct Choice {
 #[derive(Deserialize, Debug)]
 pub struct MessageContent {
     pub content: String,
-}
-
-// Claude-specific request structure
-#[derive(Debug, Serialize)]
-pub struct ClaudeRequest {
-    pub model: String,
-    pub max_tokens: u32,
-    pub system: String,
-    pub messages: Vec<ChatMessage>,
-}
-
-// Claude-specific response structure
-#[derive(Deserialize, Debug)]
-pub struct ClaudeChatResponse {
-    pub content: Vec<ClaudeChatContent>,
-    // "max_tokens" here means the output was cut at the token cap (truncated).
+    /// Web-search citations, when the provider ran a search. OpenRouter fills
+    /// this in for `:online` models; plain chat/completions responses omit it.
     #[serde(default)]
-    pub stop_reason: Option<String>,
+    pub annotations: Vec<serde_json::Value>,
 }
 
-#[derive(Deserialize, Debug)]
-pub struct ClaudeChatContent {
-    pub text: String,
-}
+// Claude's response is read as raw JSON rather than a typed struct. Two reasons:
+// with web search the `content` array is heterogeneous (`text`,
+// `server_tool_use` and `web_search_tool_result` blocks interleave, and the
+// answer is spread across several `text` blocks), and the `pause_turn`
+// continuation has to echo the assistant turn back byte-identical because the
+// `encrypted_content` in a search result must survive the round trip. See
+// `generate_claude_native`.
 
 // Native Ollama /api/chat request (NOT the OpenAI-compat shim). The shim ignores
 // context sizing, so Ollama serves its small default (~4k) and silently truncates long
@@ -248,6 +269,48 @@ impl LLMProvider {
     }
 }
 
+/// Generate text and discard any citations — the shape every summary caller
+/// wants. New callers that care about sources should use `generate_answer`.
+#[allow(clippy::too_many_arguments)]
+pub async fn generate_summary(
+    client: &Client,
+    provider: &LLMProvider,
+    model_name: &str,
+    api_key: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    images: &[ImageInput],
+    ollama_endpoint: Option<&str>,
+    custom_openai_endpoint: Option<&str>,
+    lmstudio_endpoint: Option<&str>,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
+    top_p: Option<f32>,
+    app_data_dir: Option<&PathBuf>,
+    cancellation_token: Option<&CancellationToken>,
+) -> Result<String, String> {
+    generate_answer(
+        client,
+        provider,
+        model_name,
+        api_key,
+        system_prompt,
+        user_prompt,
+        images,
+        ollama_endpoint,
+        custom_openai_endpoint,
+        lmstudio_endpoint,
+        max_tokens,
+        temperature,
+        top_p,
+        app_data_dir,
+        cancellation_token,
+        LlmExtras::default(),
+    )
+    .await
+    .map(|answer| answer.text)
+}
+
 /// Generates a summary using the specified LLM provider
 ///
 /// # Arguments
@@ -268,9 +331,12 @@ impl LLMProvider {
 /// * `app_data_dir` - Optional app data directory (for BuiltInAI provider)
 /// * `cancellation_token` - Optional token to cancel the request
 ///
+/// * `extras` - Optional capabilities such as provider-side web search
+///
 /// # Returns
-/// The generated summary text or an error message
-pub async fn generate_summary(
+/// The generated text plus any sources the provider cited, or an error message
+#[allow(clippy::too_many_arguments)]
+pub async fn generate_answer(
     client: &Client,
     provider: &LLMProvider,
     model_name: &str,
@@ -286,7 +352,8 @@ pub async fn generate_summary(
     top_p: Option<f32>,
     app_data_dir: Option<&PathBuf>,
     cancellation_token: Option<&CancellationToken>,
-) -> Result<String, String> {
+    extras: LlmExtras,
+) -> Result<LlmAnswer, String> {
     // Check if cancelled before starting
     if let Some(token) = cancellation_token {
         if token.is_cancelled() {
@@ -313,6 +380,7 @@ pub async fn generate_summary(
             cancellation_token,
         )
         .await
+        .map(LlmAnswer::text_only)
         .map_err(|e| e.to_string());
     }
 
@@ -332,6 +400,46 @@ pub async fn generate_summary(
             images,
             app_data_dir,
             cancellation_token,
+            extras.web_search,
+        )
+        .await
+        .map(|answer| LlmAnswer {
+            text: answer.text,
+            sources: answer.sources,
+            search_count: answer.search_count,
+        });
+    }
+
+    // Claude has its own endpoint shape, and with web search on it also needs a
+    // `pause_turn` continuation loop, so it gets a dedicated path rather than
+    // more branching inside the OpenAI-compatible one below.
+    if provider == &LLMProvider::Claude {
+        return generate_claude_native(
+            client,
+            model_name,
+            api_key,
+            system_prompt,
+            user_prompt,
+            images,
+            max_tokens,
+            extras.web_search,
+            cancellation_token,
+        )
+        .await;
+    }
+
+    // OpenAI can only search through the Responses API — `web_search_options` on
+    // chat/completions is rejected by current models. Swap endpoints for that
+    // case alone and leave the ordinary chat path untouched.
+    if provider == &LLMProvider::OpenAI && extras.web_search {
+        return generate_openai_responses(
+            client,
+            model_name,
+            api_key,
+            system_prompt,
+            user_prompt,
+            images,
+            cancellation_token,
         )
         .await;
     }
@@ -350,7 +458,8 @@ pub async fn generate_summary(
             temperature,
             cancellation_token,
         )
-        .await;
+        .await
+        .map(LlmAnswer::text_only);
     }
 
     let (api_url, mut headers) = match provider {
@@ -399,41 +508,19 @@ pub async fn generate_summary(
                 header::HeaderMap::new(),
             )
         }
-        LLMProvider::Claude => {
-            let mut header_map = header::HeaderMap::new();
-            header_map.insert(
-                "x-api-key",
-                api_key
-                    .parse()
-                    .map_err(|_| "Invalid API key format".to_string())?,
-            );
-            header_map.insert(
-                "anthropic-version",
-                "2023-06-01"
-                    .parse()
-                    .map_err(|_| "Invalid anthropic version".to_string())?,
-            );
-            ("https://api.anthropic.com/v1/messages".to_string(), header_map)
-        }
-        LLMProvider::BuiltInAI => {
-            // This case is handled earlier with early returns
-            unreachable!("BuiltInAI is handled before this match statement")
-        }
-        LLMProvider::ChatGptSubscription => {
-            // Handled earlier with an early return (Codex responses protocol)
-            unreachable!("ChatGptSubscription is handled before this match statement")
+        LLMProvider::Claude | LLMProvider::BuiltInAI | LLMProvider::ChatGptSubscription => {
+            // All three early-return above: Claude to its own endpoint shape,
+            // BuiltInAI to the local sidecar, ChatGPT to the Codex protocol.
+            unreachable!("{:?} is handled before this match statement", provider)
         }
     };
 
-    // Add authorization header for non-Claude providers
-    if provider != &LLMProvider::Claude {
-        headers.insert(
-            header::AUTHORIZATION,
-            format!("Bearer {}", api_key)
-                .parse()
-                .map_err(|_| "Invalid authorization header".to_string())?,
-        );
-    }
+    headers.insert(
+        header::AUTHORIZATION,
+        format!("Bearer {}", api_key)
+            .parse()
+            .map_err(|_| "Invalid authorization header".to_string())?,
+    );
     headers.insert(
         header::CONTENT_TYPE,
         "application/json"
@@ -441,71 +528,47 @@ pub async fn generate_summary(
             .map_err(|_| "Invalid content type".to_string())?,
     );
 
-    // Build request body based on provider
-    let request_body = if provider != &LLMProvider::Claude {
-        // For CustomOpenAI, apply optional parameters if provided
-        let (max_tokens_val, temperature_val, top_p_val) = if provider == &LLMProvider::CustomOpenAI {
-            (max_tokens, temperature, top_p)
-        } else {
-            (None, None, None)
-        };
-
-        serde_json::json!(ChatRequest {
-            model: model_name.to_string(),
-            messages: vec![
-                ChatMessage::text("system", system_prompt),
-                openai_user_message(user_prompt, images),
-            ],
-            max_tokens: max_tokens_val,
-            temperature: temperature_val,
-            top_p: top_p_val,
-        })
+    // For CustomOpenAI, apply optional parameters if provided
+    let (max_tokens_val, temperature_val, top_p_val) = if provider == &LLMProvider::CustomOpenAI {
+        (max_tokens, temperature, top_p)
     } else {
-        serde_json::json!(ClaudeRequest {
-            system: system_prompt.to_string(),
-            model: model_name.to_string(),
-            // Was hardcoded to 2048, which cut long summaries and the translation pass
-            // mid-output. Default to 8192; a user-provided max_tokens overrides.
-            max_tokens: max_tokens.unwrap_or(8192),
-            messages: vec![claude_user_message(user_prompt, images)]
-        })
+        (None, None, None)
     };
 
-    info!("🐞 LLM Request to {}: model={}", provider_name(provider), model_name);
-
-    // Send request with timeout and cancellation support
-    let request_future = client
-        .post(api_url)
-        .headers(headers)
-        .json(&request_body)
-        .timeout(REQUEST_TIMEOUT_DURATION)
-        .send();
-
-    // Use tokio::select to race between cancellation and request completion
-    let response = if let Some(token) = cancellation_token {
-        tokio::select! {
-            result = request_future => {
-                result.map_err(|e| {
-                    if e.is_timeout() {
-                        format!("LLM request timed out after 60 seconds")
-                    } else {
-                        format!("Failed to send request to LLM: {}", e)
-                    }
-                })?
-            }
-            _ = token.cancelled() => {
-                return Err("Summary generation was cancelled".to_string());
-            }
-        }
+    // OpenRouter enables its web plugin through the model slug rather than a
+    // request field, so searching means asking for a different model id.
+    let effective_model = if extras.web_search && provider == &LLMProvider::OpenRouter {
+        web_search::openrouter_online_model(model_name)
     } else {
-        request_future.await.map_err(|e| {
-            if e.is_timeout() {
-                format!("LLM request timed out after 60 seconds")
-            } else {
-                format!("Failed to send request to LLM: {}", e)
-            }
-        })?
+        model_name.to_string()
     };
+
+    let request_body = serde_json::json!(ChatRequest {
+        model: effective_model.clone(),
+        messages: vec![
+            ChatMessage::text("system", system_prompt),
+            openai_user_message(user_prompt, images),
+        ],
+        max_tokens: max_tokens_val,
+        temperature: temperature_val,
+        top_p: top_p_val,
+    });
+
+    info!(
+        "🐞 LLM Request to {}: model={}",
+        provider_name(provider),
+        effective_model
+    );
+
+    let response = send_with_cancellation(
+        client
+            .post(api_url)
+            .headers(headers)
+            .json(&request_body)
+            .timeout(REQUEST_TIMEOUT_DURATION),
+        cancellation_token,
+    )
+    .await?;
 
     if !response.status().is_success() {
         let error_body = response
@@ -515,45 +578,345 @@ pub async fn generate_summary(
         return Err(format!("LLM API request failed: {}", error_body));
     }
 
-    // Parse response based on provider
-    if provider == &LLMProvider::Claude {
-        let chat_response = response
-            .json::<ClaudeChatResponse>()
-            .await
-            .map_err(|e| format!("Failed to parse LLM response: {}", e))?;
+    let chat_response = response
+        .json::<ChatResponse>()
+        .await
+        .map_err(|e| format!("Failed to parse LLM response: {}", e))?;
 
-        info!("🐞 LLM Response received from Claude");
+    info!(
+        "🐞 LLM Response received from {}",
+        provider_name(provider)
+    );
 
-        if chat_response.stop_reason.as_deref() == Some("max_tokens") {
-            tracing::warn!(
-                "Claude response stopped at max_tokens — summary may be truncated (raise max_tokens)"
-            );
+    let message = &chat_response
+        .choices
+        .get(0)
+        .ok_or("No content in LLM response")?
+        .message;
+
+    Ok(LlmAnswer {
+        text: message.content.trim().to_string(),
+        sources: web_search::dedupe_sources(web_search::sources_from_annotations(
+            &message.annotations,
+        )),
+        // These providers return citations but no search count. Leave it at zero
+        // rather than inventing one from the number of sources.
+        search_count: 0,
+    })
+}
+
+/// Send a request, aborting early if the caller's cancellation token fires.
+async fn send_with_cancellation(
+    request: reqwest::RequestBuilder,
+    cancellation_token: Option<&CancellationToken>,
+) -> Result<reqwest::Response, String> {
+    let to_error = |e: reqwest::Error| {
+        if e.is_timeout() {
+            format!(
+                "LLM request timed out after {}s",
+                REQUEST_TIMEOUT_DURATION.as_secs()
+            )
+        } else {
+            format!("Failed to send request to LLM: {}", e)
+        }
+    };
+
+    match cancellation_token {
+        Some(token) => tokio::select! {
+            result = request.send() => result.map_err(to_error),
+            _ = token.cancelled() => Err("Summary generation was cancelled".to_string()),
+        },
+        None => request.send().await.map_err(to_error),
+    }
+}
+
+/// How many searches Claude may run for one question. Enough for a definition
+/// or a comparison without letting a single chat turn balloon in cost.
+const CLAUDE_MAX_WEB_SEARCHES: u32 = 5;
+
+/// Cap on `pause_turn` continuations, so a pathological search loop cannot spin
+/// forever. Whatever text has accumulated is returned when the cap is hit.
+const CLAUDE_MAX_PAUSE_CONTINUATIONS: usize = 3;
+
+/// Call Claude's Messages endpoint, optionally with its server-side web search.
+///
+/// Separate from the OpenAI-compatible path because the wire format differs in
+/// three ways that all matter here: a top-level `system` field, a heterogeneous
+/// `content` block array, and the `pause_turn` stop reason, which asks the
+/// client to resend the assistant turn to let a long search continue.
+#[allow(clippy::too_many_arguments)]
+async fn generate_claude_native(
+    client: &Client,
+    model_name: &str,
+    api_key: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    images: &[ImageInput],
+    max_tokens: Option<u32>,
+    web_search: bool,
+    cancellation_token: Option<&CancellationToken>,
+) -> Result<LlmAnswer, String> {
+    let mut headers = header::HeaderMap::new();
+    headers.insert(
+        "x-api-key",
+        api_key
+            .parse()
+            .map_err(|_| "Invalid API key format".to_string())?,
+    );
+    headers.insert(
+        "anthropic-version",
+        "2023-06-01"
+            .parse()
+            .map_err(|_| "Invalid anthropic version".to_string())?,
+    );
+    headers.insert(
+        header::CONTENT_TYPE,
+        "application/json"
+            .parse()
+            .map_err(|_| "Invalid content type".to_string())?,
+    );
+
+    let mut messages = vec![serde_json::to_value(claude_user_message(user_prompt, images))
+        .map_err(|e| format!("Failed to build Claude message: {}", e))?];
+
+    let mut answer = LlmAnswer::default();
+
+    for turn in 0..=CLAUDE_MAX_PAUSE_CONTINUATIONS {
+        let mut body = serde_json::json!({
+            "model": model_name,
+            // Was hardcoded to 2048, which cut long summaries and the translation
+            // pass mid-output. Default to 8192; a user-provided max_tokens wins.
+            "max_tokens": max_tokens.unwrap_or(8192),
+            "system": system_prompt,
+            "messages": messages,
+        });
+        if web_search {
+            body["tools"] =
+                serde_json::json!([web_search::claude_web_search_tool(CLAUDE_MAX_WEB_SEARCHES)]);
         }
 
-        let content = chat_response
-            .content
-            .get(0)
-            .ok_or("No content in LLM response")?
-            .text
-            .trim();
-        Ok(content.to_string())
-    } else {
-        let chat_response = response
-            .json::<ChatResponse>()
+        info!(
+            "🐞 LLM Request to Claude: model={} web_search={} turn={}",
+            model_name, web_search, turn
+        );
+
+        let response = send_with_cancellation(
+            client
+                .post("https://api.anthropic.com/v1/messages")
+                .headers(headers.clone())
+                .json(&body)
+                .timeout(REQUEST_TIMEOUT_DURATION),
+            cancellation_token,
+        )
+        .await?;
+
+        if !response.status().is_success() {
+            let error_body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(format!("LLM API request failed: {}", error_body));
+        }
+
+        let raw: serde_json::Value = response
+            .json()
             .await
             .map_err(|e| format!("Failed to parse LLM response: {}", e))?;
 
-        info!("🐞 LLM Response received from {}", provider_name(provider));
+        let content = raw
+            .get("content")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]));
 
-        let content = chat_response
-            .choices
-            .get(0)
-            .ok_or("No content in LLM response")?
-            .message
-            .content
-            .trim();
-        Ok(content.to_string())
+        let (text, sources) = claude_text_and_sources(&content);
+        if !text.is_empty() {
+            if !answer.text.is_empty() {
+                answer.text.push_str("\n\n");
+            }
+            answer.text.push_str(&text);
+        }
+        answer.sources.extend(sources);
+        answer.search_count += raw
+            .get("usage")
+            .and_then(|u| u.get("server_tool_use"))
+            .and_then(|t| t.get("web_search_requests"))
+            .and_then(|n| n.as_u64())
+            .unwrap_or(0) as u32;
+
+        // Search failures come back inside a 200 response, so they are invisible
+        // unless we look for them. The answer still stands (Claude falls back to
+        // what it knows) but it is worth knowing why no sources appeared.
+        for error_code in claude_search_errors(&content) {
+            tracing::warn!("Claude web search returned an error: {}", error_code);
+        }
+
+        match raw.get("stop_reason").and_then(|s| s.as_str()) {
+            Some("pause_turn") if turn < CLAUDE_MAX_PAUSE_CONTINUATIONS => {
+                // Resend the assistant turn untouched. Each search result carries
+                // `encrypted_content` the API decrypts to rebuild its context, and
+                // it rejects the request outright if that is altered — which is
+                // why this echoes the raw JSON rather than re-serializing a struct.
+                messages.push(serde_json::json!({
+                    "role": "assistant",
+                    "content": content,
+                }));
+                continue;
+            }
+            Some("pause_turn") => {
+                tracing::warn!(
+                    "Claude still paused after {} continuations; returning the partial answer",
+                    CLAUDE_MAX_PAUSE_CONTINUATIONS
+                );
+            }
+            Some("max_tokens") => {
+                tracing::warn!(
+                    "Claude response stopped at max_tokens — output may be truncated (raise max_tokens)"
+                );
+            }
+            _ => {}
+        }
+        break;
     }
+
+    if answer.text.trim().is_empty() {
+        return Err("No content in LLM response".to_string());
+    }
+    answer.text = answer.text.trim().to_string();
+    answer.sources = web_search::dedupe_sources(answer.sources);
+    Ok(answer)
+}
+
+/// Answer text and citations from Claude's `content` block array.
+///
+/// Only `text` blocks carry the answer; `server_tool_use` and
+/// `web_search_tool_result` blocks are search bookkeeping. Text is spread across
+/// several blocks once citations are involved, so every one has to be joined —
+/// reading `content[0]` would return "I'll search for that" and drop the answer.
+fn claude_text_and_sources(content: &serde_json::Value) -> (String, Vec<WebSource>) {
+    let mut text = String::new();
+    let mut sources = Vec::new();
+    let Some(blocks) = content.as_array() else {
+        return (text, sources);
+    };
+
+    for block in blocks {
+        if block.get("type").and_then(|t| t.as_str()) != Some("text") {
+            continue;
+        }
+        if let Some(chunk) = block.get("text").and_then(|t| t.as_str()) {
+            let chunk = chunk.trim();
+            if !chunk.is_empty() {
+                if !text.is_empty() && !text.ends_with(' ') {
+                    text.push(' ');
+                }
+                text.push_str(chunk);
+            }
+        }
+        if let Some(citations) = block.get("citations").and_then(|c| c.as_array()) {
+            sources.extend(claude_sources_from_citations(citations));
+        }
+    }
+
+    (text, sources)
+}
+
+fn claude_sources_from_citations(citations: &[serde_json::Value]) -> Vec<WebSource> {
+    citations
+        .iter()
+        .filter(|c| {
+            c.get("type").and_then(|t| t.as_str()) == Some("web_search_result_location")
+        })
+        .filter_map(|c| {
+            Some(WebSource {
+                url: c.get("url").and_then(|u| u.as_str())?.to_string(),
+                title: c.get("title").and_then(|t| t.as_str()).map(str::to_string),
+                cited_text: c
+                    .get("cited_text")
+                    .and_then(|t| t.as_str())
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty()),
+            })
+        })
+        .collect()
+}
+
+/// Error codes from failed searches. A successful search puts a *list* in
+/// `content`; a failed one puts a single error *object* there instead.
+fn claude_search_errors(content: &serde_json::Value) -> Vec<String> {
+    let Some(blocks) = content.as_array() else {
+        return Vec::new();
+    };
+    blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("web_search_tool_result"))
+        .filter_map(|b| {
+            b.get("content")?
+                .get("error_code")?
+                .as_str()
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+/// Call OpenAI's Responses API with web search enabled.
+///
+/// Only reachable in web-search mode. Chat/completions cannot search on current
+/// models — `web_search_options` is rejected by the gpt-5 series and the old
+/// `*-search-preview` models were retired — so searching means a different
+/// endpoint with a different request and response shape. Every other mode keeps
+/// using the chat/completions path.
+async fn generate_openai_responses(
+    client: &Client,
+    model_name: &str,
+    api_key: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    images: &[ImageInput],
+    cancellation_token: Option<&CancellationToken>,
+) -> Result<LlmAnswer, String> {
+    // The Codex path already builds exactly this content-part array.
+    let input = crate::openai::chatgpt_oauth::build_codex_input(user_prompt, images);
+    let body = web_search::openai_responses_body(model_name, system_prompt, input);
+
+    info!(
+        "🐞 LLM Request to OpenAI (Responses + web search): model={}",
+        model_name
+    );
+
+    let response = send_with_cancellation(
+        client
+            .post(web_search::OPENAI_RESPONSES_URL)
+            .header(header::AUTHORIZATION, format!("Bearer {}", api_key))
+            .header(header::CONTENT_TYPE, "application/json")
+            .json(&body)
+            .timeout(REQUEST_TIMEOUT_DURATION),
+        cancellation_token,
+    )
+    .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(format!(
+            "OpenAI Responses request failed ({}): {}",
+            status, error_body
+        ));
+    }
+
+    let raw: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse OpenAI Responses payload: {}", e))?;
+
+    let (text, sources, search_count) = web_search::parse_openai_responses(&raw)?;
+    Ok(LlmAnswer {
+        text,
+        sources,
+        search_count,
+    })
 }
 
 /// Generate a summary via Ollama's native `/api/chat` endpoint with `options.num_ctx`
@@ -783,17 +1146,109 @@ mod tests {
     }
 
     #[test]
-    fn claude_response_parses_stop_reason() {
-        let json = r#"{"content":[{"text":"summary"}],"stop_reason":"max_tokens"}"#;
-        let resp: ClaudeChatResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.stop_reason.as_deref(), Some("max_tokens"));
-        assert_eq!(resp.content[0].text, "summary");
+    fn claude_plain_text_response_yields_the_text_and_no_sources() {
+        let content = serde_json::json!([{ "type": "text", "text": "  summary  " }]);
+        let (text, sources) = claude_text_and_sources(&content);
+        assert_eq!(text, "summary");
+        assert!(sources.is_empty());
+    }
+
+    /// The shape a search actually returns: bookkeeping blocks interleaved with
+    /// several text blocks. Reading only `content[0]` here would answer
+    /// "I'll search for that." and throw the real answer away.
+    #[test]
+    fn claude_web_search_response_joins_text_blocks_and_collects_citations() {
+        let content = serde_json::json!([
+            { "type": "text", "text": "I'll search for that." },
+            {
+                "type": "server_tool_use",
+                "id": "srvtoolu_01",
+                "name": "web_search",
+                "input": { "query": "what is an ERP" }
+            },
+            {
+                "type": "web_search_tool_result",
+                "tool_use_id": "srvtoolu_01",
+                "content": [{
+                    "type": "web_search_result",
+                    "url": "https://en.wikipedia.org/wiki/Enterprise_resource_planning",
+                    "title": "Enterprise resource planning - Wikipedia",
+                    "encrypted_content": "EqgfCioIARgBIiQ3YTAwMjY1Mi1",
+                    "page_age": "April 30, 2026"
+                }]
+            },
+            {
+                "type": "text",
+                "text": "An ERP integrates core business processes.",
+                "citations": [{
+                    "type": "web_search_result_location",
+                    "url": "https://en.wikipedia.org/wiki/Enterprise_resource_planning",
+                    "title": "Enterprise resource planning - Wikipedia",
+                    "encrypted_index": "Eo8BCioIAhgBIiQyYjQ0",
+                    "cited_text": "Enterprise resource planning (ERP) is the integrated management of..."
+                }]
+            }
+        ]);
+
+        let (text, sources) = claude_text_and_sources(&content);
+        assert_eq!(
+            text,
+            "I'll search for that. An ERP integrates core business processes."
+        );
+        assert_eq!(sources.len(), 1);
+        assert_eq!(
+            sources[0].url,
+            "https://en.wikipedia.org/wiki/Enterprise_resource_planning"
+        );
+        assert!(sources[0].cited_text.as_deref().unwrap().starts_with("Enterprise"));
     }
 
     #[test]
-    fn claude_response_tolerates_missing_stop_reason() {
-        let resp: ClaudeChatResponse =
-            serde_json::from_str(r#"{"content":[{"text":"x"}]}"#).unwrap();
-        assert_eq!(resp.stop_reason, None);
+    fn claude_non_text_blocks_never_contribute_text() {
+        let content = serde_json::json!([
+            { "type": "server_tool_use", "id": "x", "name": "web_search", "input": {} },
+            { "type": "web_search_tool_result", "tool_use_id": "x", "content": [] }
+        ]);
+        let (text, sources) = claude_text_and_sources(&content);
+        assert!(text.is_empty());
+        assert!(sources.is_empty());
+    }
+
+    /// A failed search still comes back as HTTP 200, with `content` holding an
+    /// error object instead of the usual list.
+    #[test]
+    fn claude_search_errors_are_detected() {
+        let content = serde_json::json!([{
+            "type": "web_search_tool_result",
+            "tool_use_id": "srvtoolu_01",
+            "content": { "type": "web_search_tool_result_error", "error_code": "max_uses_exceeded" }
+        }]);
+        assert_eq!(claude_search_errors(&content), vec!["max_uses_exceeded"]);
+
+        let ok = serde_json::json!([{
+            "type": "web_search_tool_result",
+            "tool_use_id": "srvtoolu_01",
+            "content": [{ "type": "web_search_result", "url": "https://a.example" }]
+        }]);
+        assert!(claude_search_errors(&ok).is_empty());
+    }
+
+    #[test]
+    fn openai_compatible_response_without_annotations_reports_no_sources() {
+        let json = r#"{"choices":[{"message":{"content":"hello"}}]}"#;
+        let resp: ChatResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.choices[0].message.content, "hello");
+        assert!(resp.choices[0].message.annotations.is_empty());
+    }
+
+    #[test]
+    fn openrouter_online_response_carries_url_citations() {
+        let json = r#"{"choices":[{"message":{"content":"An ERP is...","annotations":[
+            {"type":"url_citation","url_citation":{"url":"https://sap.com","title":"What is ERP"}}
+        ]}}]}"#;
+        let resp: ChatResponse = serde_json::from_str(json).unwrap();
+        let sources = web_search::sources_from_annotations(&resp.choices[0].message.annotations);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].url, "https://sap.com");
     }
 }

@@ -4,15 +4,22 @@ use uuid::Uuid;
 
 use crate::database::models::{ChatMessageModel, ChatThreadModel};
 
+/// Column default in 20260819130000_add_chat_grounding — kept in sync here so
+/// rows this repository builds in memory match what SQLite would have written.
+pub const DEFAULT_GROUNDING_MODE: &str = "transcript_only";
+
 pub struct ChatMessagesRepository;
 
 impl ChatMessagesRepository {
+    /// `metadata` is JSON describing how an assistant answer was produced; pass
+    /// None for user messages and for answers with nothing to record.
     pub async fn add_message(
         pool: &SqlitePool,
         meeting_id: &str,
         thread_id: &str,
         role: &str,
         content: &str,
+        metadata: Option<&str>,
     ) -> Result<ChatMessageModel, sqlx::Error> {
         if role != "user" && role != "assistant" {
             return Err(sqlx::Error::Protocol(format!(
@@ -25,8 +32,8 @@ impl ChatMessagesRepository {
         let created_at = Utc::now();
 
         sqlx::query(
-            "INSERT INTO chat_messages (id, meeting_id, thread_id, role, content, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO chat_messages (id, meeting_id, thread_id, role, content, created_at, metadata) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(meeting_id)
@@ -34,6 +41,7 @@ impl ChatMessagesRepository {
         .bind(role)
         .bind(content)
         .bind(created_at)
+        .bind(metadata)
         .execute(pool)
         .await?;
 
@@ -44,6 +52,7 @@ impl ChatMessagesRepository {
             role: role.to_string(),
             content: content.to_string(),
             created_at,
+            metadata: metadata.map(str::to_string),
         })
     }
 
@@ -55,7 +64,7 @@ impl ChatMessagesRepository {
         // inserts can collide; insertion order (rowid) settles the tie. The FTS
         // index already depends on stable rowids, so this adds no new assumption.
         sqlx::query_as::<_, ChatMessageModel>(
-            "SELECT id, meeting_id, thread_id, role, content, created_at \
+            "SELECT id, meeting_id, thread_id, role, content, created_at, metadata \
              FROM chat_messages WHERE thread_id = ? ORDER BY created_at ASC, rowid ASC",
         )
         .bind(thread_id)
@@ -68,7 +77,7 @@ impl ChatMessagesRepository {
         meeting_id: &str,
     ) -> Result<Vec<ChatMessageModel>, sqlx::Error> {
         sqlx::query_as::<_, ChatMessageModel>(
-            "SELECT id, meeting_id, thread_id, role, content, created_at \
+            "SELECT id, meeting_id, thread_id, role, content, created_at, metadata \
              FROM chat_messages WHERE meeting_id = ? ORDER BY created_at ASC, rowid ASC",
         )
         .bind(meeting_id)
@@ -114,6 +123,8 @@ pub struct NewChatMessage {
     pub role: String,
     pub content: String,
     pub created_at: DateTime<Utc>,
+    /// Grounding/citation JSON, as on `ChatMessageModel::metadata`.
+    pub metadata: Option<String>,
 }
 
 pub struct ChatThreadsRepository;
@@ -143,6 +154,8 @@ impl ChatThreadsRepository {
             meeting_id: meeting_id.to_string(),
             title: title.to_string(),
             origin: origin.to_string(),
+            // Matches the column default in 20260819130000_add_chat_grounding.
+            grounding_mode: DEFAULT_GROUNDING_MODE.to_string(),
             created_at,
         })
     }
@@ -152,7 +165,7 @@ impl ChatThreadsRepository {
         meeting_id: &str,
     ) -> Result<Vec<ChatThreadModel>, sqlx::Error> {
         sqlx::query_as::<_, ChatThreadModel>(
-            "SELECT id, meeting_id, title, origin, created_at \
+            "SELECT id, meeting_id, title, origin, grounding_mode, created_at \
              FROM chat_threads WHERE meeting_id = ? ORDER BY created_at ASC, rowid ASC",
         )
         .bind(meeting_id)
@@ -165,7 +178,7 @@ impl ChatThreadsRepository {
         thread_id: &str,
     ) -> Result<Option<ChatThreadModel>, sqlx::Error> {
         sqlx::query_as::<_, ChatThreadModel>(
-            "SELECT id, meeting_id, title, origin, created_at \
+            "SELECT id, meeting_id, title, origin, grounding_mode, created_at \
              FROM chat_threads WHERE id = ?",
         )
         .bind(thread_id)
@@ -177,6 +190,21 @@ impl ChatThreadsRepository {
     /// (not left to the FK cascade) because cascade deletes do not fire the
     /// per-row FTS triggers under SQLite's default recursive_triggers=OFF —
     /// the explicit DELETE keeps search_index in sync.
+    /// Change how far past the transcript a conversation may reach. Returns the
+    /// number of rows updated, so callers can tell a missing thread from a no-op.
+    pub async fn set_grounding_mode(
+        pool: &SqlitePool,
+        thread_id: &str,
+        grounding_mode: &str,
+    ) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query("UPDATE chat_threads SET grounding_mode = ? WHERE id = ?")
+            .bind(grounding_mode)
+            .bind(thread_id)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn delete_thread(pool: &SqlitePool, thread_id: &str) -> Result<u64, sqlx::Error> {
         let mut tx = pool.begin().await?;
         sqlx::query("DELETE FROM chat_messages WHERE thread_id = ?")
@@ -198,6 +226,7 @@ impl ChatThreadsRepository {
         pool: &SqlitePool,
         meeting_id: &str,
         messages: &[NewChatMessage],
+        grounding_mode: &str,
     ) -> Result<ChatThreadModel, sqlx::Error> {
         let thread_id = format!("thread-{}", Uuid::new_v4());
         let thread_created_at = messages
@@ -207,18 +236,19 @@ impl ChatThreadsRepository {
 
         let mut tx = pool.begin().await?;
         sqlx::query(
-            "INSERT INTO chat_threads (id, meeting_id, title, origin, created_at) \
-             VALUES (?, ?, 'Live chat', 'live', ?)",
+            "INSERT INTO chat_threads (id, meeting_id, title, origin, grounding_mode, created_at) \
+             VALUES (?, ?, 'Live chat', 'live', ?, ?)",
         )
         .bind(&thread_id)
         .bind(meeting_id)
+        .bind(grounding_mode)
         .bind(thread_created_at)
         .execute(&mut *tx)
         .await?;
         for msg in messages {
             sqlx::query(
-                "INSERT INTO chat_messages (id, meeting_id, thread_id, role, content, created_at) \
-                 VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO chat_messages (id, meeting_id, thread_id, role, content, created_at, metadata) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(Uuid::new_v4().to_string())
             .bind(meeting_id)
@@ -226,6 +256,7 @@ impl ChatThreadsRepository {
             .bind(&msg.role)
             .bind(&msg.content)
             .bind(msg.created_at)
+            .bind(&msg.metadata)
             .execute(&mut *tx)
             .await?;
         }
@@ -236,6 +267,7 @@ impl ChatThreadsRepository {
             meeting_id: meeting_id.to_string(),
             title: "Live chat".to_string(),
             origin: "live".to_string(),
+            grounding_mode: grounding_mode.to_string(),
             created_at: thread_created_at,
         })
     }
@@ -269,10 +301,10 @@ mod tests {
         insert_meeting(&pool, "m1").await;
         let thread_id = insert_thread(&pool, "m1").await;
 
-        ChatMessagesRepository::add_message(&pool, "m1", &thread_id, "user", "hello")
+        ChatMessagesRepository::add_message(&pool, "m1", &thread_id, "user", "hello", None)
             .await
             .unwrap();
-        ChatMessagesRepository::add_message(&pool, "m1", &thread_id, "assistant", "hi there")
+        ChatMessagesRepository::add_message(&pool, "m1", &thread_id, "assistant", "hi there", None)
             .await
             .unwrap();
 
@@ -301,7 +333,7 @@ mod tests {
         insert_meeting(&pool, "m1").await;
         let thread_id = insert_thread(&pool, "m1").await;
         let result =
-            ChatMessagesRepository::add_message(&pool, "m1", &thread_id, "system", "nope").await;
+            ChatMessagesRepository::add_message(&pool, "m1", &thread_id, "system", "nope", None).await;
         assert!(result.is_err(), "an invalid chat role must be rejected");
     }
 
@@ -368,7 +400,7 @@ mod tests {
         insert_meeting(&pool, "m1").await;
         let thread_id = insert_thread(&pool, "m1").await;
 
-        ChatMessagesRepository::add_message(&pool, "m1", &thread_id, "user", "findable-chat-text")
+        ChatMessagesRepository::add_message(&pool, "m1", &thread_id, "user", "findable-chat-text", None)
             .await
             .unwrap();
 
@@ -411,26 +443,43 @@ mod tests {
                 role: "user".to_string(),
                 content: "q1".to_string(),
                 created_at: base,
+                metadata: None,
             },
             NewChatMessage {
                 role: "assistant".to_string(),
                 content: "a1".to_string(),
                 created_at: base,
+                metadata: None,
             },
             NewChatMessage {
                 role: "user".to_string(),
                 content: "q2".to_string(),
                 created_at: base + chrono::Duration::seconds(30),
+                metadata: None,
             },
         ];
 
-        let thread =
-            ChatThreadsRepository::create_live_thread_with_messages(&pool, "m1", &messages)
-                .await
-                .unwrap();
+        let thread = ChatThreadsRepository::create_live_thread_with_messages(
+            &pool,
+            "m1",
+            &messages,
+            "web_search",
+        )
+        .await
+        .unwrap();
         assert_eq!(thread.origin, "live");
         assert_eq!(thread.title, "Live chat");
         assert_eq!(thread.created_at, base);
+        // The mode the Ask-AI panel was using has to reach the persisted thread,
+        // or reopening a live conversation silently reverts to transcript-only.
+        assert_eq!(thread.grounding_mode, "web_search");
+        let stored: String =
+            sqlx::query_scalar("SELECT grounding_mode FROM chat_threads WHERE id = ?")
+                .bind(&thread.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored, "web_search");
 
         let msgs = ChatMessagesRepository::list_for_thread(&pool, &thread.id)
             .await
@@ -441,11 +490,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn threads_default_to_transcript_only_and_can_be_changed() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m1").await;
+
+        let thread = ChatThreadsRepository::create_thread(&pool, "m1", "Chat 1", "post")
+            .await
+            .unwrap();
+        assert_eq!(thread.grounding_mode, DEFAULT_GROUNDING_MODE);
+
+        // The in-memory row must match what SQLite actually wrote.
+        let reloaded = ChatThreadsRepository::get_thread(&pool, &thread.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reloaded.grounding_mode, DEFAULT_GROUNDING_MODE);
+
+        let updated = ChatThreadsRepository::set_grounding_mode(&pool, &thread.id, "web_search")
+            .await
+            .unwrap();
+        assert_eq!(updated, 1);
+        let reloaded = ChatThreadsRepository::get_thread(&pool, &thread.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reloaded.grounding_mode, "web_search");
+
+        // A missing thread reports zero rows rather than pretending to succeed.
+        let missing = ChatThreadsRepository::set_grounding_mode(&pool, "nope", "web_search")
+            .await
+            .unwrap();
+        assert_eq!(missing, 0);
+    }
+
+    #[tokio::test]
+    async fn assistant_metadata_round_trips() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m1").await;
+        let thread_id = insert_thread(&pool, "m1").await;
+
+        ChatMessagesRepository::add_message(&pool, "m1", &thread_id, "user", "what is an ERP?", None)
+            .await
+            .unwrap();
+        ChatMessagesRepository::add_message(
+            &pool,
+            "m1",
+            &thread_id,
+            "assistant",
+            "An ERP is...",
+            Some(r#"{"grounding":{"requested":"web_search","effective":"web_search"}}"#),
+        )
+        .await
+        .unwrap();
+
+        let msgs = ChatMessagesRepository::list_for_thread(&pool, &thread_id)
+            .await
+            .unwrap();
+        assert_eq!(msgs[0].metadata, None, "user messages carry no metadata");
+        assert!(msgs[1].metadata.as_deref().unwrap().contains("web_search"));
+    }
+
+    #[tokio::test]
     async fn meeting_cascade_removes_threads() {
         let pool = migrated_pool().await;
         insert_meeting(&pool, "m1").await;
         let thread_id = insert_thread(&pool, "m1").await;
-        ChatMessagesRepository::add_message(&pool, "m1", &thread_id, "user", "hello")
+        ChatMessagesRepository::add_message(&pool, "m1", &thread_id, "user", "hello", None)
             .await
             .unwrap();
 

@@ -151,6 +151,10 @@ pub struct ChatMessageModel {
     pub role: String,
     pub content: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// JSON describing where an assistant answer came from and what it cited
+    /// (see `ChatAnswerMetadata` in api/chat_api.rs). None on user messages and
+    /// on every row written before chat grounding modes existed.
+    pub metadata: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -160,6 +164,9 @@ pub struct ChatThreadModel {
     pub title: String,
     /// 'live' (carried over from an Ask-AI session during recording) or 'post'.
     pub origin: String,
+    /// How far past the transcript this conversation may reach:
+    /// 'transcript_only' | 'general_knowledge' | 'web_search'.
+    pub grounding_mode: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 

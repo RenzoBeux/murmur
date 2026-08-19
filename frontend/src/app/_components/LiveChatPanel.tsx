@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button';
 import { ModelPicker } from '@/components/chat/ModelPicker';
 import { ChatMessageList } from '@/components/chat/ChatMessageList';
 import { ChatComposer } from '@/components/chat/ChatComposer';
+import { GroundingPicker } from '@/components/chat/GroundingPicker';
+import { ChatGrounding } from '@/types';
 import { useChatModelSelection } from '@/hooks/useChatModelSelection';
 import { useLiveChat } from '@/hooks/useLiveChat';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
@@ -24,7 +26,14 @@ interface LiveChatPanelProps {
 export function LiveChatPanel({ onClose }: LiveChatPanelProps) {
   const { provider, model, ollamaModelNames, modelOptions, providerApiKeys, chatgptSignedIn, onPickerOpen, handlePickModel } =
     useChatModelSelection();
-  const { messages, isSending, sendMessage, clearChat } = useLiveChat({ provider, model });
+  // The live panel has no thread row to store this on; the Rust side remembers
+  // the last mode used and stamps it on the thread it creates when recording stops.
+  const [grounding, setGrounding] = useState<ChatGrounding>('transcript_only');
+  const { messages, isSending, sendMessage, clearChat } = useLiveChat({
+    provider,
+    model,
+    grounding,
+  });
   const { status, isRecording } = useRecordingState();
   const { transcripts } = useTranscripts();
 
@@ -117,6 +126,15 @@ export function LiveChatPanel({ onClose }: LiveChatPanelProps) {
         disabled={!canAsk}
         sendDisabled={!model}
         isSending={isSending}
+        leadingControl={
+          <GroundingPicker
+            value={grounding}
+            onChange={setGrounding}
+            provider={provider}
+            model={model}
+            disabled={!canAsk}
+          />
+        }
       />
     </div>
   );

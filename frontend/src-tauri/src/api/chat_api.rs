@@ -9,7 +9,8 @@ use crate::database::repositories::{
     setting::SettingsRepository,
 };
 use crate::state::AppState;
-use crate::summary::llm_client::{generate_summary, LLMProvider};
+use crate::summary::llm_client::{generate_answer, LLMProvider, LlmAnswer, LlmExtras};
+use crate::summary::web_search::{self, WebSource};
 
 /// Transcript budget when the model's context size is unknown (LM Studio, or a
 /// failed Ollama metadata fetch). ~8k tokens — safe for most local models.
@@ -69,6 +70,91 @@ async fn transcript_char_budget(
     }
 }
 
+/// How far past the meeting the assistant may reach when answering.
+///
+/// The transcript is the primary source under every mode; they differ only in
+/// what happens when the answer is not in it. Stored per chat thread, so a
+/// strict recap conversation and a research conversation can coexist in one
+/// meeting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatGrounding {
+    /// Transcript and attachments only — the behavior before grounding modes
+    /// existed, and still the default.
+    #[default]
+    TranscriptOnly,
+    /// May also answer from the model's own knowledge. Makes no extra network
+    /// calls: the request goes to the same provider it always did.
+    GeneralKnowledge,
+    /// May also run the provider's own server-side web search.
+    WebSearch,
+}
+
+impl ChatGrounding {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::TranscriptOnly => "transcript_only",
+            Self::GeneralKnowledge => "general_knowledge",
+            Self::WebSearch => "web_search",
+        }
+    }
+
+    /// Parse a stored or frontend-supplied mode. An unrecognized value falls
+    /// back to the strictest mode rather than failing the chat turn — a bad
+    /// value must never widen what the assistant is allowed to do.
+    pub fn parse(value: &str) -> Self {
+        match value.trim() {
+            "general_knowledge" => Self::GeneralKnowledge,
+            "web_search" => Self::WebSearch,
+            "transcript_only" => Self::TranscriptOnly,
+            other => {
+                if !other.is_empty() {
+                    log_error!("Unknown chat grounding mode {:?}; using transcript_only", other);
+                }
+                Self::TranscriptOnly
+            }
+        }
+    }
+}
+
+/// What actually happened on one answer, recorded so the UI can label it and so
+/// a degradation is visible instead of silent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroundingOutcome {
+    /// The mode the thread asked for.
+    pub requested: ChatGrounding,
+    /// The mode that ran. Lower than `requested` when the provider can't search.
+    pub effective: ChatGrounding,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degraded_reason: Option<String>,
+}
+
+/// Persisted as JSON in `chat_messages.metadata` on assistant messages.
+///
+/// Only written when there is something to say — a plain transcript-only answer
+/// stores nothing, exactly as before this feature existed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatAnswerMetadata {
+    pub grounding: GroundingOutcome,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<WebSource>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub search_count: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// Whether this provider/model can search, reported to the picker so the web
+/// option can be disabled with a reason instead of silently doing nothing.
+#[derive(Debug, Serialize)]
+pub struct WebSearchSupportInfo {
+    pub supported: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub id: String,
@@ -77,10 +163,20 @@ pub struct ChatMessage {
     pub role: String,
     pub content: String,
     pub created_at: String,
+    /// Parsed from the stored JSON. None on user messages, on older rows, and
+    /// on any row whose JSON no longer parses (a schema change must not make an
+    /// existing conversation unreadable).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<ChatAnswerMetadata>,
 }
 
 impl From<crate::database::models::ChatMessageModel> for ChatMessage {
     fn from(m: crate::database::models::ChatMessageModel) -> Self {
+        let metadata = m.metadata.as_deref().and_then(|raw| {
+            serde_json::from_str::<ChatAnswerMetadata>(raw)
+                .map_err(|e| log_error!("Ignoring unreadable chat metadata on {}: {}", m.id, e))
+                .ok()
+        });
         Self {
             id: m.id,
             meeting_id: m.meeting_id,
@@ -88,6 +184,7 @@ impl From<crate::database::models::ChatMessageModel> for ChatMessage {
             role: m.role,
             content: m.content,
             created_at: m.created_at.to_rfc3339(),
+            metadata,
         }
     }
 }
@@ -98,6 +195,7 @@ pub struct ChatThread {
     pub meeting_id: String,
     pub title: String,
     pub origin: String,
+    pub grounding_mode: ChatGrounding,
     pub created_at: String,
 }
 
@@ -108,6 +206,7 @@ impl From<crate::database::models::ChatThreadModel> for ChatThread {
             meeting_id: t.meeting_id,
             title: t.title,
             origin: t.origin,
+            grounding_mode: ChatGrounding::parse(&t.grounding_mode),
             created_at: t.created_at.to_rfc3339(),
         }
     }
@@ -235,7 +334,7 @@ async fn require_thread(
     pool: &sqlx::SqlitePool,
     meeting_id: &str,
     thread_id: &str,
-) -> Result<(), String> {
+) -> Result<crate::database::models::ChatThreadModel, String> {
     let thread = ChatThreadsRepository::get_thread(pool, thread_id)
         .await
         .map_err(|e| format!("Failed to load chat thread: {}", e))?
@@ -246,7 +345,58 @@ async fn require_thread(
             thread_id, meeting_id
         ));
     }
-    Ok(())
+    Ok(thread)
+}
+
+/// Decide what grounding actually runs.
+///
+/// A thread set to web search on a provider that can't search falls back to
+/// general knowledge rather than pretending — the reason travels with the answer
+/// so the UI can explain it instead of the user wondering why no sources showed
+/// up. Only web search can degrade; the other two modes need nothing from the
+/// provider.
+fn resolve_grounding(
+    requested: ChatGrounding,
+    provider: &LLMProvider,
+    model: &str,
+) -> (ChatGrounding, Option<String>) {
+    if requested != ChatGrounding::WebSearch {
+        return (requested, None);
+    }
+    match web_search::web_search_support(provider, model) {
+        web_search::WebSearchSupport::Native => (ChatGrounding::WebSearch, None),
+        web_search::WebSearchSupport::Unsupported(reason) => {
+            log_info!("Web search unavailable for {:?}/{}: {}", provider, model, reason);
+            (ChatGrounding::GeneralKnowledge, Some(reason.to_string()))
+        }
+    }
+}
+
+/// Serialize what happened, for `chat_messages.metadata`.
+///
+/// Returns None for a plain transcript-only answer: those store nothing, so
+/// existing conversations keep exactly the rows they had before grounding modes.
+fn build_answer_metadata(
+    requested: ChatGrounding,
+    effective: ChatGrounding,
+    degraded_reason: Option<String>,
+    answer: &LlmAnswer,
+) -> Option<String> {
+    if requested == ChatGrounding::TranscriptOnly {
+        return None;
+    }
+    let metadata = ChatAnswerMetadata {
+        grounding: GroundingOutcome {
+            requested,
+            effective,
+            degraded_reason,
+        },
+        sources: answer.sources.clone(),
+        search_count: answer.search_count,
+    };
+    serde_json::to_string(&metadata)
+        .map_err(|e| log_error!("Failed to serialize chat metadata: {}", e))
+        .ok()
 }
 
 #[tauri::command]
@@ -290,7 +440,8 @@ pub async fn api_send_chat_message<R: Runtime>(
         .map_err(|e| format!("Failed to load meeting: {}", e))?
         .ok_or_else(|| format!("Meeting {} not found", meeting_id))?;
 
-    require_thread(pool, &meeting_id, &thread_id).await?;
+    let thread = require_thread(pool, &meeting_id, &thread_id).await?;
+    let requested_grounding = ChatGrounding::parse(&thread.grounding_mode);
 
     // Load chat history BEFORE persisting the new user message so the LLM sees
     // the prior conversation followed by the current question.
@@ -299,10 +450,16 @@ pub async fn api_send_chat_message<R: Runtime>(
         .map_err(|e| format!("Failed to load chat history: {}", e))?;
 
     // Persist user message immediately so it's not lost if the LLM call fails.
-    let user_msg =
-        ChatMessagesRepository::add_message(pool, &meeting_id, &thread_id, "user", trimmed_message)
-            .await
-            .map_err(|e| format!("Failed to save user message: {}", e))?;
+    let user_msg = ChatMessagesRepository::add_message(
+        pool,
+        &meeting_id,
+        &thread_id,
+        "user",
+        trimmed_message,
+        None,
+    )
+    .await
+    .map_err(|e| format!("Failed to save user message: {}", e))?;
 
     // Attendee roster (canonical name spellings), same source the summary uses.
     let attendees = match MeetingsRepository::get_meeting_attendees(pool, &meeting_id).await {
@@ -357,12 +514,20 @@ pub async fn api_send_chat_message<R: Runtime>(
             .map(|t| (t.speaker.as_deref(), t.text.as_str())),
         char_budget,
     );
+    // Build the prompt for the mode that will actually run, so a model that
+    // cannot search is never told to search.
+    let (effective_grounding, degraded_reason) =
+        resolve_grounding(requested_grounding, &config.provider_enum, &model);
     let system_prompt = build_system_prompt(
         &meeting.title,
         &transcript_text,
         attendees.as_deref(),
         attachment_notes.as_deref(),
+        effective_grounding,
     );
+    let extras = LlmExtras {
+        web_search: effective_grounding == ChatGrounding::WebSearch,
+    };
     let history: Vec<(&str, &str)> = history_raw
         .iter()
         .map(|m| (m.role.as_str(), m.content.as_str()))
@@ -370,7 +535,7 @@ pub async fn api_send_chat_message<R: Runtime>(
     let user_prompt = build_user_prompt(&history, trimmed_message);
 
     let client = reqwest::Client::new();
-    let mut answer_result = generate_summary(
+    let mut answer_result = generate_answer(
         &client,
         &config.provider_enum,
         &model,
@@ -386,6 +551,7 @@ pub async fn api_send_chat_message<R: Runtime>(
         config.custom_openai_top_p,
         config.app_data_dir.as_ref(),
         None,
+        extras,
     )
     .await;
 
@@ -402,7 +568,7 @@ pub async fn api_send_chat_message<R: Runtime>(
             system_prompt,
             images.len()
         );
-        let retry = generate_summary(
+        let retry = generate_answer(
             &client,
             &config.provider_enum,
             &model,
@@ -418,6 +584,7 @@ pub async fn api_send_chat_message<R: Runtime>(
             config.custom_openai_top_p,
             config.app_data_dir.as_ref(),
             None,
+            extras,
         )
         .await;
         if retry.is_ok() {
@@ -426,7 +593,7 @@ pub async fn api_send_chat_message<R: Runtime>(
     }
 
     let answer = match answer_result {
-        Ok(text) => text.trim().to_string(),
+        Ok(answer) => answer,
         Err(e) => {
             log_error!("Chat LLM call failed for {}: {}", meeting_id, e);
             // Roll back the user message so the conversation isn't left dangling
@@ -436,12 +603,85 @@ pub async fn api_send_chat_message<R: Runtime>(
         }
     };
 
-    let assistant_msg =
-        ChatMessagesRepository::add_message(pool, &meeting_id, &thread_id, "assistant", &answer)
-            .await
-            .map_err(|e| format!("Failed to save assistant message: {}", e))?;
+    // The ChatGPT backend only reveals whether it accepts web search by being
+    // asked, so re-resolve after the call: a first-time rejection degrades this
+    // very answer, and the label has to say so rather than claiming a search.
+    let (effective_grounding, degraded_reason) = if effective_grounding == ChatGrounding::WebSearch {
+        resolve_grounding(requested_grounding, &config.provider_enum, &model)
+    } else {
+        (effective_grounding, degraded_reason)
+    };
+
+    let metadata = build_answer_metadata(
+        requested_grounding,
+        effective_grounding,
+        degraded_reason,
+        &answer,
+    );
+
+    let assistant_msg = ChatMessagesRepository::add_message(
+        pool,
+        &meeting_id,
+        &thread_id,
+        "assistant",
+        answer.text.trim(),
+        metadata.as_deref(),
+    )
+    .await
+    .map_err(|e| format!("Failed to save assistant message: {}", e))?;
 
     Ok(assistant_msg.into())
+}
+
+/// Change how far past the transcript a conversation may reach.
+#[tauri::command]
+pub async fn api_set_chat_thread_grounding<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    thread_id: String,
+    grounding: String,
+) -> Result<ChatThread, String> {
+    let pool = state.db_manager.pool();
+    let thread = require_thread(pool, &meeting_id, &thread_id).await?;
+
+    // Round-trip through the enum so an unrecognized value can never be stored.
+    let mode = ChatGrounding::parse(&grounding);
+    let updated = ChatThreadsRepository::set_grounding_mode(pool, &thread_id, mode.as_str())
+        .await
+        .map_err(|e| format!("Failed to update chat thread grounding: {}", e))?;
+    if updated == 0 {
+        return Err(format!("Chat thread {} not found", thread_id));
+    }
+    log_info!(
+        "api_set_chat_thread_grounding: thread={} mode={}",
+        thread_id,
+        mode.as_str()
+    );
+
+    Ok(ChatThread {
+        grounding_mode: mode,
+        ..ChatThread::from(thread)
+    })
+}
+
+/// Whether the given provider/model can search the web.
+///
+/// The capability table lives in Rust so it has exactly one definition; the
+/// picker calls this when the selected model changes rather than keeping its own
+/// copy that could drift.
+#[tauri::command]
+pub async fn api_chat_web_search_support<R: Runtime>(
+    _app: AppHandle<R>,
+    provider: String,
+    model: String,
+) -> Result<WebSearchSupportInfo, String> {
+    let provider_enum = LLMProvider::from_str(&provider)?;
+    let support = web_search::web_search_support(&provider_enum, &model);
+    Ok(WebSearchSupportInfo {
+        supported: support.is_native(),
+        reason: support.reason().map(str::to_string),
+    })
 }
 
 #[tauri::command]
@@ -561,6 +801,7 @@ pub async fn api_send_live_chat_message<R: Runtime>(
     message: String,
     provider: String,
     model: String,
+    grounding: Option<String>,
 ) -> Result<LiveChatMessage, String> {
     let trimmed_message = message.trim().to_string();
     if trimmed_message.is_empty() {
@@ -588,9 +829,14 @@ pub async fn api_send_live_chat_message<R: Runtime>(
         .await?
         .unwrap_or_else(|| "Current meeting".to_string());
 
+    // The live panel has no thread row yet, so the mode arrives with the request
+    // and is remembered for the thread the stop path will create.
+    let requested_grounding = grounding.as_deref().map(ChatGrounding::parse).unwrap_or_default();
+    live_chat::set_grounding_mode(requested_grounding.as_str());
+
     // History BEFORE appending the new question, mirroring the saved-meeting path.
     let history_raw = live_chat::snapshot();
-    let user_msg = live_chat::append("user", &trimmed_message);
+    let user_msg = live_chat::append("user", &trimmed_message, None);
 
     let pool = state.db_manager.pool();
     let config = match resolve_llm_config(&app, pool, &provider).await {
@@ -613,7 +859,18 @@ pub async fn api_send_live_chat_message<R: Runtime>(
             .map(|s| (s.speaker.as_deref(), s.text.as_str())),
         char_budget,
     );
-    let system_prompt = build_system_prompt(&title, &transcript_text, None, None);
+    let (effective_grounding, degraded_reason) =
+        resolve_grounding(requested_grounding, &config.provider_enum, &model);
+    let system_prompt = build_system_prompt(
+        &title,
+        &transcript_text,
+        None,
+        None,
+        effective_grounding,
+    );
+    let extras = LlmExtras {
+        web_search: effective_grounding == ChatGrounding::WebSearch,
+    };
     let history: Vec<(&str, &str)> = history_raw
         .iter()
         .map(|m| (m.role.as_str(), m.content.as_str()))
@@ -621,7 +878,7 @@ pub async fn api_send_live_chat_message<R: Runtime>(
     let user_prompt = build_user_prompt(&history, &trimmed_message);
 
     let client = reqwest::Client::new();
-    let answer_result = generate_summary(
+    let answer_result = generate_answer(
         &client,
         &config.provider_enum,
         &model,
@@ -637,11 +894,12 @@ pub async fn api_send_live_chat_message<R: Runtime>(
         config.custom_openai_top_p,
         config.app_data_dir.as_ref(),
         None,
+        extras,
     )
     .await;
 
     let answer = match answer_result {
-        Ok(text) => text.trim().to_string(),
+        Ok(answer) => answer,
         Err(e) => {
             log_error!("Live chat LLM call failed: {}", e);
             // Roll back the user message so the conversation isn't left dangling.
@@ -649,18 +907,39 @@ pub async fn api_send_live_chat_message<R: Runtime>(
             return Err(format!("Chat failed: {}", e));
         }
     };
+    // The ChatGPT backend only reveals whether it accepts web search by being
+    // asked, so re-resolve after the call: a first-time rejection degrades this
+    // very answer, and the label has to say so rather than claiming a search.
+    let (effective_grounding, degraded_reason) = if effective_grounding == ChatGrounding::WebSearch {
+        resolve_grounding(requested_grounding, &config.provider_enum, &model)
+    } else {
+        (effective_grounding, degraded_reason)
+    };
+
+    let metadata = build_answer_metadata(
+        requested_grounding,
+        effective_grounding,
+        degraded_reason,
+        &answer,
+    );
+    let answer_text = answer.text.trim().to_string();
 
     // If the recording stopped while the LLM call was in flight, the stop path
     // already drained (or discarded) the store — still hand the answer back so
     // the user sees it; that final Q/A pair just isn't persisted.
     if crate::audio::recording_commands::is_recording().await {
-        Ok(live_chat::append("assistant", &answer))
+        Ok(live_chat::append(
+            "assistant",
+            &answer_text,
+            metadata.as_deref(),
+        ))
     } else {
         Ok(LiveChatMessage {
             id: uuid::Uuid::new_v4().to_string(),
             role: "assistant".to_string(),
-            content: answer,
+            content: answer_text,
             created_at: chrono::Utc::now(),
+            metadata,
         })
     }
 }
@@ -735,12 +1014,17 @@ fn build_system_prompt(
     transcript_text: &str,
     attendees: Option<&str>,
     attachment_notes: Option<&str>,
+    grounding: ChatGrounding,
 ) -> String {
-    // The grounding instruction adapts to whether the meeting has attachments.
-    // With attachments present, the model must treat them as a source alongside
-    // the transcript — otherwise the "strictly in the transcript" wording makes a
-    // vision model ignore an attached image (delivered to it in the same request)
-    // that plainly answers the question, and it reports the answer as missing.
+    // Two independent decisions, deliberately split so they don't multiply:
+    //
+    //   1. What counts as a meeting source — transcript alone, or transcript
+    //      plus attachments. With attachments present the model must treat them
+    //      as a source, otherwise "strictly in the transcript" makes a vision
+    //      model ignore an attached image (delivered in the same request) that
+    //      plainly answers the question, and report the answer as missing.
+    //   2. What to do when those sources fall short — this is the grounding
+    //      mode. The transcript stays the primary source under every mode.
     let has_attachments = attachment_notes
         .map(str::trim)
         .filter(|n| !n.is_empty())
@@ -748,22 +1032,51 @@ fn build_system_prompt(
 
     let mut prompt = String::new();
     prompt.push_str("You are a helpful assistant answering questions about a recorded meeting.\n");
-    if has_attachments {
-        prompt.push_str(
+
+    match (has_attachments, grounding) {
+        (true, _) => prompt.push_str(
             "Ground every answer in the meeting transcript below AND in the files the user \
              attached (listed after this paragraph — any images are provided directly in this \
              conversation, and text files are inlined). The attachments are authoritative, on \
              equal footing with the transcript: when the answer appears in an attached image or \
-             file, use it and note which attachment it came from. Only say you cannot find \
-             something when it is absent from BOTH the transcript and every attachment; never \
-             guess. ",
-        );
-    } else {
-        prompt.push_str(
+             file, use it and note which attachment it came from. ",
+        ),
+        (false, ChatGrounding::TranscriptOnly) => prompt.push_str(
             "Ground every answer strictly in the meeting transcript below. \
-             Quote only verbatim text that actually appears in the transcript. \
-             If the answer is not in the transcript, say you cannot find it rather than guessing. ",
-        );
+             Quote only verbatim text that actually appears in the transcript. ",
+        ),
+        (false, _) => prompt.push_str(
+            "The meeting transcript below is your primary source, and you should always \
+             prefer it when it covers the question. \
+             Quote only verbatim text that actually appears in the transcript. ",
+        ),
+    }
+
+    match grounding {
+        ChatGrounding::TranscriptOnly if has_attachments => prompt.push_str(
+            "Only say you cannot find something when it is absent from BOTH the transcript \
+             and every attachment; never guess. ",
+        ),
+        ChatGrounding::TranscriptOnly => prompt.push_str(
+            "If the answer is not in the transcript, say you cannot find it rather than guessing. ",
+        ),
+        ChatGrounding::GeneralKnowledge => prompt.push_str(
+            "When the answer is not in the meeting, say so plainly first (for example \
+             \"That wasn't discussed in this meeting\") and then answer from your own general \
+             knowledge, keeping the two clearly separated. Never present outside knowledge as \
+             something that was said in the meeting, and never attribute it to a speaker. \
+             If you are unsure of a general fact, say so rather than inventing it. ",
+        ),
+        ChatGrounding::WebSearch => prompt.push_str(
+            "When the answer is not in the meeting, say so plainly first (for example \
+             \"That wasn't discussed in this meeting\") and then answer from the web or your \
+             own general knowledge, keeping the two clearly separated. Search the web when the \
+             meeting does not cover the question, when the answer depends on current \
+             information, or when the user asks what a term, product or company mentioned in \
+             passing actually is. Do not search for questions the transcript already answers. \
+             Never present outside knowledge as something that was said in the meeting, and \
+             never attribute it to a speaker. ",
+        ),
     }
     prompt.push_str(
         "Each transcript line that has a known speaker is prefixed `Speaker: text` — the \
@@ -828,7 +1141,13 @@ mod tests {
     #[test]
     fn system_prompt_includes_attendee_roster_when_provided() {
         let prompt =
-            build_system_prompt("Standup", "You: hello", Some("Renzo, Lean, Sofía"), None);
+            build_system_prompt(
+            "Standup",
+            "You: hello",
+            Some("Renzo, Lean, Sofía"),
+            None,
+            ChatGrounding::TranscriptOnly,
+        );
 
         assert!(prompt.contains("Renzo, Lean, Sofía"));
         assert!(prompt.contains("canonical spelling"));
@@ -837,14 +1156,26 @@ mod tests {
     #[test]
     fn system_prompt_omits_roster_block_when_absent_or_blank() {
         for attendees in [None, Some(""), Some("   \n")] {
-            let prompt = build_system_prompt("Standup", "You: hello", attendees, None);
+            let prompt = build_system_prompt(
+                "Standup",
+                "You: hello",
+                attendees,
+                None,
+                ChatGrounding::TranscriptOnly,
+            );
             assert!(!prompt.contains("Attendees (canonical names"));
         }
     }
 
     #[test]
     fn system_prompt_always_carries_attribution_rules() {
-        let prompt = build_system_prompt("Standup", "You: hello", None, None);
+        let prompt = build_system_prompt(
+            "Standup",
+            "You: hello",
+            None,
+            None,
+            ChatGrounding::TranscriptOnly,
+        );
 
         assert!(prompt.contains("ONLY reliable indicator"));
         assert!(prompt.contains("NOT necessarily the speaker"));
@@ -922,10 +1253,17 @@ mod tests {
             "You: hello",
             None,
             Some("Attached files:\n- whiteboard.png (image/png, shown as image)"),
+            ChatGrounding::TranscriptOnly,
         );
         assert!(prompt.contains("whiteboard.png"));
 
-        let without = build_system_prompt("Standup", "You: hello", None, Some("  "));
+        let without = build_system_prompt(
+            "Standup",
+            "You: hello",
+            None,
+            Some("  "),
+            ChatGrounding::TranscriptOnly,
+        );
         assert!(!without.contains("Attached files"));
     }
 
@@ -936,6 +1274,7 @@ mod tests {
             "You: hello",
             None,
             Some("Attached files:\n- owners.png (image/png, shown as image)"),
+            ChatGrounding::TranscriptOnly,
         );
         // Attachments are authorized as a source, and the transcript-only wording
         // that made the model ignore the image is gone.
@@ -944,10 +1283,187 @@ mod tests {
         assert!(!prompt.contains("strictly in the meeting transcript"));
     }
 
+    /// The whole point of the feature: the strict "say you cannot find it"
+    /// instruction must be gone, replaced by permission to answer from outside
+    /// knowledge while still labelling it as such.
+    #[test]
+    fn general_knowledge_mode_allows_answering_beyond_the_transcript() {
+        let prompt = build_system_prompt(
+            "Standup",
+            "You: we should migrate the ERP",
+            None,
+            None,
+            ChatGrounding::GeneralKnowledge,
+        );
+
+        assert!(!prompt.contains("strictly in the meeting transcript"));
+        assert!(!prompt.contains("say you cannot find it rather than guessing"));
+        assert!(prompt.contains("primary source"));
+        assert!(prompt.contains("your own general knowledge"));
+        // Outside knowledge must never be laundered into a quote from the meeting.
+        assert!(prompt.contains("never attribute it to a speaker"));
+        // General knowledge is the offline mode — it must not ask for a search.
+        assert!(!prompt.contains("Search the web"));
+    }
+
+    #[test]
+    fn web_search_mode_asks_for_searches_only_when_the_meeting_falls_short() {
+        let prompt = build_system_prompt(
+            "Standup",
+            "You: we should migrate the ERP",
+            None,
+            None,
+            ChatGrounding::WebSearch,
+        );
+
+        assert!(prompt.contains("Search the web"));
+        assert!(prompt.contains("Do not search for questions the transcript already answers"));
+        assert!(!prompt.contains("strictly in the meeting transcript"));
+    }
+
+    /// Attachments stay authoritative under every mode — relaxing grounding must
+    /// not quietly demote a file the user attached.
+    #[test]
+    fn attachments_stay_authoritative_in_every_mode() {
+        for mode in [
+            ChatGrounding::TranscriptOnly,
+            ChatGrounding::GeneralKnowledge,
+            ChatGrounding::WebSearch,
+        ] {
+            let prompt = build_system_prompt(
+                "Standup",
+                "You: hello",
+                None,
+                Some("Attached files:\n- owners.png (image/png, shown as image)"),
+                mode,
+            );
+            assert!(
+                prompt.contains("The attachments are authoritative"),
+                "{:?} dropped the attachment grounding",
+                mode
+            );
+        }
+    }
+
+    /// Only web search can degrade, and only to general knowledge — never to a
+    /// mode the user did not ask for in the other direction.
+    #[test]
+    fn web_search_degrades_to_general_knowledge_on_providers_that_cannot_search() {
+        let (effective, reason) =
+            resolve_grounding(ChatGrounding::WebSearch, &LLMProvider::Ollama, "llama3.2");
+        assert_eq!(effective, ChatGrounding::GeneralKnowledge);
+        assert!(reason.is_some(), "a degradation must explain itself");
+
+        let (effective, reason) =
+            resolve_grounding(ChatGrounding::WebSearch, &LLMProvider::Claude, "claude-opus-5");
+        assert_eq!(effective, ChatGrounding::WebSearch);
+        assert!(reason.is_none());
+    }
+
+    #[test]
+    fn non_web_modes_are_never_degraded() {
+        for mode in [ChatGrounding::TranscriptOnly, ChatGrounding::GeneralKnowledge] {
+            let (effective, reason) = resolve_grounding(mode, &LLMProvider::Ollama, "llama3.2");
+            assert_eq!(effective, mode);
+            assert!(reason.is_none());
+        }
+    }
+
+    #[test]
+    fn unknown_grounding_values_fall_back_to_the_strictest_mode() {
+        assert_eq!(ChatGrounding::parse("nonsense"), ChatGrounding::TranscriptOnly);
+        assert_eq!(ChatGrounding::parse(""), ChatGrounding::TranscriptOnly);
+        assert_eq!(
+            ChatGrounding::parse("general_knowledge"),
+            ChatGrounding::GeneralKnowledge
+        );
+        assert_eq!(ChatGrounding::parse(" web_search "), ChatGrounding::WebSearch);
+    }
+
+    /// Grounding modes must serialize as the exact strings the column stores.
+    #[test]
+    fn grounding_serializes_to_its_database_value() {
+        for mode in [
+            ChatGrounding::TranscriptOnly,
+            ChatGrounding::GeneralKnowledge,
+            ChatGrounding::WebSearch,
+        ] {
+            let json = serde_json::to_string(&mode).unwrap();
+            assert_eq!(json, format!("\"{}\"", mode.as_str()));
+            assert_eq!(ChatGrounding::parse(mode.as_str()), mode);
+        }
+    }
+
+    /// Transcript-only answers keep writing no metadata, so existing
+    /// conversations stay byte-identical to what they were before this feature.
+    #[test]
+    fn transcript_only_answers_store_no_metadata() {
+        let answer = LlmAnswer {
+            text: "hi".to_string(),
+            ..Default::default()
+        };
+        assert!(build_answer_metadata(
+            ChatGrounding::TranscriptOnly,
+            ChatGrounding::TranscriptOnly,
+            None,
+            &answer
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn metadata_records_sources_and_the_degradation_reason() {
+        let answer = LlmAnswer {
+            text: "An ERP is...".to_string(),
+            sources: vec![WebSource {
+                url: "https://sap.com".to_string(),
+                title: Some("What is ERP".to_string()),
+                cited_text: None,
+            }],
+            search_count: 2,
+        };
+
+        let raw = build_answer_metadata(
+            ChatGrounding::WebSearch,
+            ChatGrounding::WebSearch,
+            None,
+            &answer,
+        )
+        .expect("web-search answers record metadata");
+        let parsed: ChatAnswerMetadata = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed.grounding.requested, ChatGrounding::WebSearch);
+        assert_eq!(parsed.grounding.effective, ChatGrounding::WebSearch);
+        assert!(parsed.grounding.degraded_reason.is_none());
+        assert_eq!(parsed.sources.len(), 1);
+        assert_eq!(parsed.search_count, 2);
+
+        let degraded = build_answer_metadata(
+            ChatGrounding::WebSearch,
+            ChatGrounding::GeneralKnowledge,
+            Some("Local models cannot search".to_string()),
+            &LlmAnswer::default(),
+        )
+        .expect("a degraded answer records why");
+        let parsed: ChatAnswerMetadata = serde_json::from_str(&degraded).unwrap();
+        assert_eq!(parsed.grounding.requested, ChatGrounding::WebSearch);
+        assert_eq!(parsed.grounding.effective, ChatGrounding::GeneralKnowledge);
+        assert_eq!(
+            parsed.grounding.degraded_reason.as_deref(),
+            Some("Local models cannot search")
+        );
+        assert!(parsed.sources.is_empty());
+    }
+
     #[test]
     fn system_prompt_stays_transcript_only_without_attachments() {
         for notes in [None, Some(""), Some("   ")] {
-            let prompt = build_system_prompt("Standup", "You: hello", None, notes);
+            let prompt = build_system_prompt(
+                "Standup",
+                "You: hello",
+                None,
+                notes,
+                ChatGrounding::TranscriptOnly,
+            );
             assert!(prompt.contains("strictly in the meeting transcript"));
             assert!(!prompt.contains("The attachments are authoritative"));
         }

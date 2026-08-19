@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   Calendar,
   Clock,
+  Download,
   FolderKanban,
   LoaderIcon,
   Pencil,
@@ -20,6 +21,7 @@ import { Button } from '@/components/ui/button';
 import { ConfirmationModal } from '@/components/ConfirmationModal/confirmation-modal';
 import { MeetingActionsMenu } from '@/components/MeetingActions/MeetingActionsMenu';
 import { AddMeetingsDialog } from '@/components/Projects/AddMeetingsDialog';
+import { ExportBundleDialog } from '@/components/Export/ExportBundleDialog';
 import { ProjectFormDialog } from '@/components/Projects/ProjectFormDialog';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { formatMeetingDuration } from '@/lib/meetingDuration';
@@ -64,6 +66,7 @@ function ProjectDetailsContent() {
   const [error, setError] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [isAdding, setIsAdding] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
 
   const load = useCallback(async () => {
@@ -184,6 +187,19 @@ function ProjectDetailsContent() {
                 <Plus className="w-4 h-4" />
                 Add meetings
               </Button>
+              <Button
+                variant="ghost"
+                onClick={() => setIsExporting(true)}
+                aria-label="Export project"
+                disabled={project.meetingCount === 0}
+                title={
+                  project.meetingCount === 0
+                    ? 'No meetings to export'
+                    : 'Export this project as a ZIP'
+                }
+              >
+                <Download className="w-4 h-4" />
+              </Button>
               <Button variant="ghost" onClick={() => setIsEditing(true)} aria-label="Edit project">
                 <Pencil className="w-4 h-4" />
               </Button>
@@ -302,6 +318,12 @@ function ProjectDetailsContent() {
         onOpenChange={setIsEditing}
         project={project}
         onSaved={setProject}
+      />
+
+      <ExportBundleDialog
+        open={isExporting}
+        onOpenChange={setIsExporting}
+        target={{ kind: 'project', projectId: project.id, name: project.name }}
       />
 
       <AddMeetingsDialog

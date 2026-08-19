@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use log::{error, info};
 use serde::Serialize;
 use tauri::{AppHandle, Runtime};
@@ -7,6 +9,13 @@ use crate::database::models::Transcript;
 use crate::database::repositories::meeting::MeetingsRepository;
 use crate::database::repositories::summary::SummaryProcessesRepository;
 use crate::state::AppState;
+
+pub mod markdown;
+pub mod naming;
+pub mod plan;
+pub mod zipper;
+
+use markdown::{speaker_display_name, yaml_value};
 
 #[tauri::command]
 pub async fn export_meeting_markdown<R: Runtime>(
@@ -88,27 +97,16 @@ pub fn build_meeting_markdown(
         if text.is_empty() {
             continue;
         }
-        match seg.speaker.as_deref().filter(|s| !s.is_empty()) {
-            Some(sp) => out.push_str(&format!("**{}:** {}\n\n", sp, text)),
+        match seg.speaker.as_deref().filter(|s| !s.trim().is_empty()) {
+            Some(sp) => out.push_str(&format!(
+                "**{}:** {}\n\n",
+                speaker_display_name(sp.trim()),
+                text
+            )),
             None => out.push_str(&format!("{}\n\n", text)),
         }
     }
     out
-}
-
-/// YAML-safe scalar: quote when the value could be misparsed.
-fn yaml_value(s: &str) -> String {
-    let needs_quote = s.is_empty()
-        || s.contains(':')
-        || s.contains('#')
-        || s.contains('"')
-        || s.starts_with(char::is_whitespace)
-        || s.ends_with(char::is_whitespace);
-    if needs_quote {
-        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
-    } else {
-        s.to_string()
-    }
 }
 
 /// `<slug>-<YYYY-MM-DD>.md` filename for a meeting.
@@ -180,6 +178,124 @@ pub async fn export_all_markdown<R: Runtime>(
     Ok(ExportAllResult {
         folder: Some(folder),
         exported,
+    })
+}
+
+/// Result of a bundle export. `path` is `None` when the user dismissed the
+/// save dialog, matching `ExportAllResult`'s cancel convention.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportBundleResult {
+    pub path: Option<String>,
+    pub meetings_exported: usize,
+    pub files_written: usize,
+    pub bytes_written: u64,
+    /// Non-fatal problems (a missing attachment, an unreadable transcript).
+    /// Collected rather than raised so one bad row cannot sink the export.
+    pub warnings: Vec<String>,
+}
+
+/// What the export dialog can offer, before the user commits to anything.
+///
+/// Lives in Rust because attachment and audio sizes come from stat-ing the
+/// filesystem, which the webview cannot do.
+#[tauri::command]
+pub async fn export_bundle_availability<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    scope: plan::ExportScope,
+) -> Result<plan::ExportAvailability, String> {
+    let inputs = plan_inputs(&app)?;
+    plan::build_availability(state.db_manager.pool(), &inputs, &scope).await
+}
+
+/// Export a meeting or a project to a `.zip` the recipient can just unzip.
+#[tauri::command]
+pub async fn export_bundle<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    request: plan::ExportBundleRequest,
+) -> Result<ExportBundleResult, String> {
+    let inputs = plan_inputs(&app)?;
+
+    // Plan first: never show a save dialog that could only produce an empty
+    // archive. Every DB read finishes here, before anything crosses to the
+    // blocking thread.
+    let plan::PreparedBundle {
+        plan,
+        suggested_filename,
+    } = plan::build_plan(state.db_manager.pool(), &inputs, &request).await?;
+
+    let app_clone = app.clone();
+    let chosen = tokio::task::spawn_blocking(move || {
+        app_clone
+            .dialog()
+            .file()
+            .add_filter("ZIP archive", &["zip"])
+            .set_file_name(&suggested_filename)
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|e| format!("Save dialog task failed: {e}"))?;
+
+    let Some(chosen) = chosen else {
+        info!("User cancelled the export save dialog");
+        return Ok(ExportBundleResult {
+            path: None,
+            meetings_exported: 0,
+            files_written: 0,
+            bytes_written: 0,
+            warnings: Vec::new(),
+        });
+    };
+
+    // Only the Windows save dialog reliably appends the filter's extension.
+    let mut dest = PathBuf::from(chosen.to_string());
+    if dest
+        .extension()
+        .map(|e| !e.eq_ignore_ascii_case("zip"))
+        .unwrap_or(true)
+    {
+        let mut name = dest.file_name().unwrap_or_default().to_os_string();
+        name.push(".zip");
+        dest.set_file_name(name);
+    }
+
+    let meetings_exported = plan.meetings;
+    let dest_for_write = dest.clone();
+
+    // Zipping is pure blocking IO and can move hundreds of megabytes, so it
+    // must not run on the async runtime the way `export_all_markdown` does.
+    let stats = tokio::task::spawn_blocking(move || zipper::write_zip(plan, &dest_for_write))
+        .await
+        .map_err(|e| format!("Export task failed: {e}"))?
+        .map_err(|e| {
+            error!("Bundle export failed: {e}");
+            e
+        })?;
+
+    info!(
+        "Exported bundle to {} ({} meeting(s), {} file(s), {} bytes, {} warning(s))",
+        dest.display(),
+        meetings_exported,
+        stats.files_written,
+        stats.bytes_written,
+        stats.warnings.len()
+    );
+
+    Ok(ExportBundleResult {
+        path: Some(dest.to_string_lossy().to_string()),
+        meetings_exported,
+        files_written: stats.files_written,
+        bytes_written: stats.bytes_written,
+        warnings: stats.warnings,
+    })
+}
+
+fn plan_inputs<R: Runtime>(app: &AppHandle<R>) -> Result<plan::PlanInputs, String> {
+    Ok(plan::PlanInputs {
+        attachments_root: crate::api::attachments_api::attachments_base_dir(app)?,
+        exported_at_rfc3339: chrono::Utc::now().to_rfc3339(),
     })
 }
 

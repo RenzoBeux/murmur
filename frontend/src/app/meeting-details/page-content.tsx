@@ -27,7 +27,6 @@ import { useMeetingData } from '@/hooks/meeting-details/useMeetingData';
 import { useSummaryGeneration } from '@/hooks/meeting-details/useSummaryGeneration';
 import { useTemplates } from '@/hooks/meeting-details/useTemplates';
 import { useCopyOperations } from '@/hooks/meeting-details/useCopyOperations';
-import { useExportOperations } from '@/hooks/meeting-details/useExportOperations';
 import { useMeetingOperations } from '@/hooks/meeting-details/useMeetingOperations';
 import { useConfig } from '@/contexts/ConfigContext';
 
@@ -190,13 +189,6 @@ export default function PageContent({
     blockNoteSummaryRef: meetingData.blockNoteSummaryRef,
   });
 
-  const exportOperations = useExportOperations({
-    meeting,
-    meetingTitle: meetingData.meetingTitle,
-    aiSummary: meetingData.aiSummary,
-    blockNoteSummaryRef: meetingData.blockNoteSummaryRef,
-  });
-
   const meetingOperations = useMeetingOperations({
     meeting,
   });
@@ -239,6 +231,13 @@ export default function PageContent({
     onRestored: refetchMeetings,
     projectId: project?.id ?? null,
     onMovedToProject: setProject,
+    // The export reads the persisted summary, so flush the editor first —
+    // otherwise unsaved edits would silently miss the archive.
+    onBeforeExport: async () => {
+      if (meetingData.blockNoteSummaryRef.current?.isDirty) {
+        await meetingData.blockNoteSummaryRef.current.saveSummary();
+      }
+    },
   });
 
   // Auto-generate summary when flag is set
@@ -313,6 +312,7 @@ export default function PageContent({
             onRename={meetingActions.openRename}
             onTrash={meetingActions.openTrash}
             onMoveToProject={meetingActions.openMoveToProject}
+            onExport={meetingActions.openExport}
           />
         </div>
       </div>
@@ -327,7 +327,7 @@ export default function PageContent({
           onAttendeesSave={handleAttendeesSave}
           onCopyTranscript={copyOperations.handleCopyTranscript}
           onOpenMeetingFolder={meetingOperations.handleOpenMeetingFolder}
-          onExportMarkdown={exportOperations.handleExportMarkdown}
+          onOpenExport={meetingActions.openExport}
           hasSummary={!!meetingData.aiSummary}
           isRecording={isRecording}
           disableAutoScroll={true}

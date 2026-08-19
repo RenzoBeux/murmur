@@ -795,6 +795,8 @@ pub fn run() {
             // Markdown export
             export::export_meeting_markdown,
             export::export_all_markdown,
+            export::export_bundle_availability,
+            export::export_bundle,
             database::backup_commands::db_backup_now,
             database::backup_commands::db_list_backups,
             database::backup_commands::db_restore_backup,

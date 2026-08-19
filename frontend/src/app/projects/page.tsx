@@ -2,7 +2,15 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { FolderKanban, FolderPlus, MoreVertical, Pencil, Plus, Trash2 } from 'lucide-react';
+import {
+  Download,
+  FolderKanban,
+  FolderPlus,
+  MoreVertical,
+  Pencil,
+  Plus,
+  Trash2,
+} from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
@@ -14,6 +22,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { ProjectFormDialog } from '@/components/Projects/ProjectFormDialog';
+import { ExportBundleDialog } from '@/components/Export/ExportBundleDialog';
 import { projectClasses } from '@/lib/projectColors';
 import {
   Project,
@@ -36,6 +45,7 @@ export default function ProjectsPage() {
   const [editing, setEditing] = useState<Project | null>(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [deleting, setDeleting] = useState<Project | null>(null);
+  const [exporting, setExporting] = useState<Project | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -169,6 +179,13 @@ export default function ProjectsPage() {
                             Edit
                           </DropdownMenuItem>
                           <DropdownMenuItem
+                            onSelect={() => setExporting(project)}
+                            disabled={project.meetingCount === 0}
+                          >
+                            <Download className="w-4 h-4" />
+                            Export…
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
                             onSelect={() => setDeleting(project)}
                             className="text-destructive focus:text-destructive focus:bg-destructive/10"
                           >
@@ -192,6 +209,16 @@ export default function ProjectsPage() {
         project={editing}
         onSaved={load}
       />
+
+      {exporting && (
+        <ExportBundleDialog
+          // Remount per project so the dialog re-probes availability.
+          key={exporting.id}
+          open
+          onOpenChange={(next) => !next && setExporting(null)}
+          target={{ kind: 'project', projectId: exporting.id, name: exporting.name }}
+        />
+      )}
 
       <ConfirmationModal
         isOpen={deleting !== null}

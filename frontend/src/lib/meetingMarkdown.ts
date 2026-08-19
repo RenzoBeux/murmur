@@ -113,39 +113,3 @@ export async function buildSummaryMarkdown(
 
   return header + metadata + summaryMarkdown;
 }
-
-export async function buildCombinedMarkdown(
-  meeting: MeetingMarkdownContext,
-  meetingTitle: string,
-  transcripts: Transcript[],
-  aiSummary: Summary | null,
-  blockNoteSummaryRef: RefObject<BlockNoteSummaryViewRef>,
-): Promise<string> {
-  const summaryMd = await buildSummaryMarkdown(meeting, meetingTitle, aiSummary, blockNoteSummaryRef);
-  const transcriptMd = buildTranscriptMarkdown(meeting, meetingTitle, transcripts);
-
-  if (!summaryMd) {
-    return transcriptMd;
-  }
-  return `${summaryMd}\n\n---\n\n${transcriptMd}`;
-}
-
-export function slugifyMeetingFilename(title: string, createdAt: string, scope: 'transcript' | 'summary' | 'both'): string {
-  const safeTitle = (title || 'meeting')
-    .replace(/[^\p{L}\p{N}\s_-]/gu, '')
-    .trim()
-    .replace(/\s+/g, '_')
-    .slice(0, 80) || 'meeting';
-
-  const datePart = (() => {
-    const d = new Date(createdAt);
-    if (Number.isNaN(d.getTime())) return '';
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    return `_${yyyy}-${mm}-${dd}`;
-  })();
-
-  const scopeSuffix = scope === 'transcript' ? '_transcript' : scope === 'summary' ? '_summary' : '';
-  return `${safeTitle}${datePart}${scopeSuffix}.md`;
-}

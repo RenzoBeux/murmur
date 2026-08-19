@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { FolderInput, MoreVertical, Pencil, Trash2 } from 'lucide-react';
+import { Download, FolderInput, MoreVertical, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { ConfirmationModal } from '@/components/ConfirmationModal/confirmation-modal';
@@ -22,6 +22,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { MoveToProjectDialog } from '@/components/Projects/MoveToProjectDialog';
+import { ExportBundleDialog } from '@/components/Export/ExportBundleDialog';
 import type { Project } from '@/lib/projectsApi';
 
 export interface MeetingActionsOptions {
@@ -38,6 +39,11 @@ export interface MeetingActionsOptions {
   projectId?: string | null;
   /** Called once the meeting has been filed (null = removed from its project). */
   onMovedToProject?: (project: Project | null) => void;
+  /**
+   * Run before an export reads the DB. Meeting-details passes a flush of the
+   * summary editor here; everywhere else the DB is already authoritative.
+   */
+  onBeforeExport?: () => Promise<void>;
 }
 
 /**
@@ -55,13 +61,15 @@ export function useMeetingActions({
   onRestored,
   projectId,
   onMovedToProject,
+  onBeforeExport,
 }: MeetingActionsOptions) {
   const [isRenaming, setIsRenaming] = useState(false);
   const [draftTitle, setDraftTitle] = useState(title);
   const [isConfirmingTrash, setIsConfirmingTrash] = useState(false);
   const [isMovingToProject, setIsMovingToProject] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   // The dialogs mount only after a menu action is first used. The meetings list
-  // renders one of these hooks per row, and mounting three closed Radix dialogs
+  // renders one of these hooks per row, and mounting four closed Radix dialogs
   // per meeting made every list reconcile disproportionately expensive. Both
   // setStates in the open* callbacks batch, so the first mounted render already
   // has the dialog open (enter animation plays); it stays mounted afterwards so
@@ -100,6 +108,11 @@ export function useMeetingActions({
   const openMoveToProject = useCallback(() => {
     setDialogsMounted(true);
     setIsMovingToProject(true);
+  }, []);
+
+  const openExport = useCallback(() => {
+    setDialogsMounted(true);
+    setIsExporting(true);
   }, []);
 
   const closeRename = useCallback(() => {
@@ -218,10 +231,17 @@ export function useMeetingActions({
         currentProjectId={projectId}
         onMoved={onMovedToProject}
       />
+
+      <ExportBundleDialog
+        open={isExporting}
+        onOpenChange={setIsExporting}
+        target={{ kind: 'meeting', meetingId, title }}
+        onBeforeExport={onBeforeExport}
+      />
     </>
   );
 
-  return { openRename, openTrash, openMoveToProject, dialogs };
+  return { openRename, openTrash, openMoveToProject, openExport, dialogs };
 }
 
 interface MeetingActionsDropdownProps {
@@ -229,6 +249,8 @@ interface MeetingActionsDropdownProps {
   onTrash: () => void;
   /** Omit to hide the item (e.g. where a project context makes it redundant). */
   onMoveToProject?: () => void;
+  /** Omit to hide the item. */
+  onExport?: () => void;
   align?: 'start' | 'end' | 'center';
   /** Extra classes for the kebab trigger. */
   className?: string;
@@ -243,6 +265,7 @@ export function MeetingActionsDropdown({
   onRename,
   onTrash,
   onMoveToProject,
+  onExport,
   align = 'end',
   className = '',
 }: MeetingActionsDropdownProps) {
@@ -285,6 +308,12 @@ export function MeetingActionsDropdown({
             Move to project
           </DropdownMenuItem>
         )}
+        {onExport && (
+          <DropdownMenuItem onSelect={select(onExport)}>
+            <Download className="w-4 h-4" />
+            Export…
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem
           onSelect={select(onTrash)}
           className="text-destructive focus:text-destructive focus:bg-destructive/10"
@@ -304,7 +333,8 @@ export interface MeetingActionsMenuProps extends MeetingActionsOptions {
 
 /** Self-contained kebab menu: the dropdown plus its rename/trash dialogs. */
 export function MeetingActionsMenu({ align, className, ...options }: MeetingActionsMenuProps) {
-  const { openRename, openTrash, openMoveToProject, dialogs } = useMeetingActions(options);
+  const { openRename, openTrash, openMoveToProject, openExport, dialogs } =
+    useMeetingActions(options);
 
   return (
     <>
@@ -312,6 +342,7 @@ export function MeetingActionsMenu({ align, className, ...options }: MeetingActi
         onRename={openRename}
         onTrash={openTrash}
         onMoveToProject={openMoveToProject}
+        onExport={openExport}
         align={align}
         className={className}
       />

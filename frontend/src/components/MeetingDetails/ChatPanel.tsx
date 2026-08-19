@@ -25,7 +25,7 @@ interface ChatPanelProps {
 }
 
 export function ChatPanel({ meetingId, hasTranscripts }: ChatPanelProps) {
-  const { provider, model, ollamaModelNames, modelOptions, providerApiKeys, handlePickModel } =
+  const { provider, model, ollamaModelNames, modelOptions, providerApiKeys, chatgptSignedIn, onPickerOpen, handlePickModel } =
     useChatModelSelection();
 
   const {
@@ -93,6 +93,8 @@ export function ChatPanel({ meetingId, hasTranscripts }: ChatPanelProps) {
             ollamaModels={ollamaModelNames}
             modelOptions={modelOptions}
             providerApiKeys={providerApiKeys}
+            chatgptSignedIn={chatgptSignedIn}
+            onOpen={onPickerOpen}
             onPick={handlePickModel}
           />
           <Button

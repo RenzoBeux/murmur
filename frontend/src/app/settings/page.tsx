@@ -1,13 +1,14 @@
 'use client';
 
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
-import { Settings2, Mic, Database as DatabaseIcon, SparkleIcon, FlaskConical } from 'lucide-react';
+import { Settings2, Mic, Database as DatabaseIcon, SparkleIcon, FlaskConical, BrainCircuit } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'framer-motion';
 import { TranscriptSettings } from '@/components/TranscriptSettings';
 import { RecordingSettings } from '@/components/RecordingSettings';
 import { PreferenceSettings } from '@/components/PreferenceSettings';
 import { SummaryModelSettings } from '@/components/SummaryModelSettings';
+import { AIProviderSettings } from '@/components/AIProviderSettings';
 import { BetaSettings } from '@/components/BetaSettings';
 import { useConfig } from '@/contexts/ConfigContext';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
@@ -17,6 +18,7 @@ const TABS = [
   { value: 'general', label: 'General', icon: Settings2 },
   { value: 'recording', label: 'Recordings', icon: Mic },
   { value: 'Transcriptionmodels', label: 'Transcription', icon: DatabaseIcon },
+  { value: 'aiProviders', label: 'AI Providers', icon: BrainCircuit },
   { value: 'summaryModels', label: 'Summary', icon: SparkleIcon },
   { value: 'beta', label: 'Beta', icon: FlaskConical }
 ] as const;
@@ -26,6 +28,15 @@ export default function SettingsPage() {
 
   // Animation state for tabs
   const [activeTab, setActiveTab] = useState('general');
+
+  // Allow deep links like /settings?tab=aiProviders (used by the chat model
+  // picker's "Manage providers" item).
+  useEffect(() => {
+    const tab = new URLSearchParams(window.location.search).get('tab');
+    if (tab && TABS.some(t => t.value === tab)) {
+      setActiveTab(tab);
+    }
+  }, []);
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const [underlineStyle, setUnderlineStyle] = useState({ left: 0, width: 0 });
 
@@ -113,8 +124,11 @@ export default function SettingsPage() {
                 setTranscriptModelConfig={setTranscriptModelConfig}
               />
             </TabsContent>
+            <TabsContent value="aiProviders">
+              <AIProviderSettings />
+            </TabsContent>
             <TabsContent value="summaryModels">
-              <SummaryModelSettings />
+              <SummaryModelSettings onOpenProviderSettings={() => setActiveTab('aiProviders')} />
             </TabsContent>
             <TabsContent value="beta" className="mt-6">
               <BetaSettings />

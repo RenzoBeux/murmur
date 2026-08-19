@@ -22,7 +22,7 @@ interface LiveChatPanelProps {
  * recording stops.
  */
 export function LiveChatPanel({ onClose }: LiveChatPanelProps) {
-  const { provider, model, ollamaModelNames, modelOptions, providerApiKeys, handlePickModel } =
+  const { provider, model, ollamaModelNames, modelOptions, providerApiKeys, chatgptSignedIn, onPickerOpen, handlePickModel } =
     useChatModelSelection();
   const { messages, isSending, sendMessage, clearChat } = useLiveChat({ provider, model });
   const { status, isRecording } = useRecordingState();
@@ -76,6 +76,8 @@ export function LiveChatPanel({ onClose }: LiveChatPanelProps) {
             ollamaModels={ollamaModelNames}
             modelOptions={modelOptions}
             providerApiKeys={providerApiKeys}
+            chatgptSignedIn={chatgptSignedIn}
+            onOpen={onPickerOpen}
             onPick={handlePickModel}
           />
           <Button

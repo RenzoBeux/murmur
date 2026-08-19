@@ -1678,6 +1678,22 @@ pub async fn get_recording_state() -> serde_json::Value {
     }
 }
 
+/// Folder of the recording that is active right now, or None when not recording.
+/// Recovery/cleanup commands use this to refuse operating on the live session's
+/// folder: recovering it mid-recording merged a truncated audio.mp4 and deleted
+/// the live `.checkpoints/`, so the final checkpoint encode at stop failed with
+/// a broken pipe and the tail of the meeting's audio was lost.
+pub fn active_recording_folder() -> Option<std::path::PathBuf> {
+    if !IS_RECORDING.load(Ordering::SeqCst) {
+        return None;
+    }
+    RECORDING_MANAGER
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|m| m.get_meeting_folder())
+}
+
 /// Get the meeting folder path for the current recording
 /// Returns the path if a meeting name was set and folder structure initialized
 #[tauri::command]

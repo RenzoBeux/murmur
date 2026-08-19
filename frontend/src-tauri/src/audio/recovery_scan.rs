@@ -170,7 +170,7 @@ fn folder_has_checkpoints(folder: &Path) -> bool {
 
 /// Canonicalized path string for dedup comparison; falls back to the lexical path when
 /// the target no longer exists (e.g. a deleted meeting's folder_path in SQLite).
-fn normalize_path(p: &Path) -> String {
+pub(crate) fn normalize_path(p: &Path) -> String {
     std::fs::canonicalize(p)
         .map(|c| c.to_string_lossy().to_string())
         .unwrap_or_else(|_| p.to_string_lossy().to_string())
@@ -293,6 +293,18 @@ pub async fn import_interrupted_recording<R: Runtime>(
     meeting_folder: String,
 ) -> Result<serde_json::Value, String> {
     let folder = PathBuf::from(&meeting_folder);
+
+    // Never import the session that is recording right now: it would create a
+    // duplicate meeting row, flip the live folder's metadata to "recovered", and
+    // merge a truncated audio.mp4 out from under the active recording.
+    if let Some(active) = crate::audio::recording_commands::active_recording_folder() {
+        if normalize_path(&active) == normalize_path(&folder) {
+            return Err(
+                "This meeting is still being recorded — stop the recording instead of recovering it."
+                    .to_string(),
+            );
+        }
+    }
 
     // Re-guard dedup (prevents a double-click / concurrent scan from double-importing).
     let known = MeetingsRepository::list_folder_paths(state.db_manager.pool())

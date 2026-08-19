@@ -256,6 +256,23 @@ pub struct AudioRecoveryStatus {
     pub message: String,
 }
 
+/// Refuse recovery/cleanup against the folder of the recording in progress. Both
+/// destroy the live session's state: `recover_audio_from_checkpoints` overwrites
+/// audio.mp4 with a merge truncated at this moment, and `cleanup_checkpoints`
+/// deletes the `.checkpoints/` dir that every later checkpoint write and the
+/// finalize step at stop still need (ffmpeg then dies and the writer gets EPIPE).
+fn refuse_if_folder_is_live_recording(folder: &PathBuf) -> Result<(), String> {
+    use crate::audio::recovery_scan::normalize_path;
+    if let Some(active) = crate::audio::recording_commands::active_recording_folder() {
+        if normalize_path(&active) == normalize_path(folder) {
+            return Err(
+                "This meeting is still being recorded — stop the recording first.".to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Recover audio from checkpoint files
 /// This is called by the transcript recovery system to merge audio chunks after a crash
 #[tauri::command]
@@ -266,6 +283,7 @@ pub async fn recover_audio_from_checkpoints(
     info!("Starting audio recovery for folder: {}", meeting_folder);
 
     let folder_path = PathBuf::from(&meeting_folder);
+    refuse_if_folder_is_live_recording(&folder_path)?;
     let checkpoints_dir = folder_path.join(".checkpoints");
 
     // Check if checkpoints directory exists
@@ -408,6 +426,7 @@ pub async fn cleanup_checkpoints(meeting_folder: String) -> Result<(), String> {
     info!("Cleaning up checkpoints for folder: {}", meeting_folder);
 
     let folder_path = PathBuf::from(&meeting_folder);
+    refuse_if_folder_is_live_recording(&folder_path)?;
     let checkpoints_dir = folder_path.join(".checkpoints");
 
     if checkpoints_dir.exists() {

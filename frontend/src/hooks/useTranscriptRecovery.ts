@@ -120,18 +120,12 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
         throw new Error('No transcripts found for this meeting');
       }
 
-      // 3. Check for folder path
-      let folderPath = metadata.folderPath;
-
-
-      if (!folderPath) {
-        // Try to get from backend (might exist if only app crashed, not system)
-        try {
-          folderPath = await invoke<string>('get_meeting_folder_path');
-        } catch (error) {
-          folderPath = undefined;
-        }
-      }
+      // 3. Folder path comes only from the journaled metadata. Never fall back to
+      //    the backend's current meeting folder: while a recording is active that
+      //    is the LIVE session's folder, and recovering against it merged a
+      //    truncated audio.mp4 and deleted the live .checkpoints/ (the stop that
+      //    followed then failed to finalize with a broken pipe).
+      const folderPath = metadata.folderPath;
 
       // 4. Attempt audio recovery if folder path exists
       let audioRecoveryStatus: AudioRecoveryStatus | null = null;

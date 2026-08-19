@@ -202,7 +202,7 @@ impl MeetingsRepository {
 
         // Get meeting details
         let meeting: Option<MeetingModel> =
-            sqlx::query_as("SELECT id, title, created_at, updated_at, folder_path FROM meetings WHERE id = ?")
+            sqlx::query_as("SELECT id, title, created_at, updated_at, folder_path, project_id FROM meetings WHERE id = ?")
                 .bind(meeting_id)
                 .fetch_optional(&mut *transaction)
                 .await?;
@@ -261,7 +261,7 @@ impl MeetingsRepository {
         }
 
         let meeting: Option<MeetingModel> =
-            sqlx::query_as("SELECT id, title, created_at, updated_at, folder_path FROM meetings WHERE id = ?")
+            sqlx::query_as("SELECT id, title, created_at, updated_at, folder_path, project_id FROM meetings WHERE id = ?")
                 .bind(meeting_id)
                 .fetch_optional(pool)
                 .await?;
@@ -814,5 +814,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(n, 0, "purge cascades to tags");
+    }
+
+    /// Every explicit column list decoded into `MeetingModel` must stay in sync with
+    /// the struct: sqlx's derived `FromRow` calls `try_get` per field, so a column
+    /// missing from the SELECT fails the whole query with `ColumnNotFound` — which is
+    /// how adding `project_id` broke meeting details while the `SELECT *` listing
+    /// kept working.
+    #[tokio::test]
+    async fn get_meeting_metadata_selects_every_model_column() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m1", "Meeting").await;
+
+        let meta = MeetingsRepository::get_meeting_metadata(&pool, "m1")
+            .await
+            .expect("metadata query decodes into MeetingModel")
+            .expect("meeting exists");
+        assert_eq!(meta.id, "m1");
+        assert_eq!(meta.project_id, None, "unfiled meeting has no project");
+
+        // And it round-trips the column once a project is assigned.
+        sqlx::query("INSERT INTO projects (id, name, created_at, updated_at) VALUES ('p1','Work',datetime('now'),datetime('now'))")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE meetings SET project_id = 'p1' WHERE id = 'm1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let meta = MeetingsRepository::get_meeting_metadata(&pool, "m1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.project_id.as_deref(), Some("p1"));
+    }
+
+    #[tokio::test]
+    async fn get_meeting_selects_every_model_column() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m1", "Meeting").await;
+
+        let details = MeetingsRepository::get_meeting(&pool, "m1")
+            .await
+            .expect("detail query decodes into MeetingModel")
+            .expect("meeting exists");
+        assert_eq!(details.id, "m1");
     }
 }

@@ -113,7 +113,10 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener('meetings-changed', handler);
   }, [fetchMeetings]);
 
-  const baseItems: SidebarItem[] = [
+  // Memoized on meetings: this provider re-renders on every recording-state change,
+  // and rebuilding the full item graph each time allocated two copies of the meeting
+  // list per second for the whole recording.
+  const baseItems: SidebarItem[] = React.useMemo(() => [
     {
       id: 'meetings',
       title: 'Meeting Notes',
@@ -122,12 +125,12 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
         ...meetings.map(meeting => ({ id: meeting.id, title: meeting.title, type: 'file' as const, createdAt: meeting.createdAt }))
       ]
     },
-  ];
+  ], [meetings]);
 
 
-  const toggleCollapse = () => {
-    setIsCollapsed(!isCollapsed);
-  };
+  const toggleCollapse = React.useCallback(() => {
+    setIsCollapsed(c => !c);
+  }, []);
 
   // Update current meeting when on home page
   useEffect(() => {
@@ -135,15 +138,15 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       setCurrentMeeting({ id: 'intro-call', title: '+ New Call' });
     }
     setSidebarItems(baseItems);
-  }, [pathname]);
+  }, [pathname, baseItems]);
 
   // Update sidebar items when meetings change
   useEffect(() => {
     setSidebarItems(baseItems);
-  }, [meetings]);
+  }, [baseItems]);
 
   // Function to handle recording toggle from sidebar
-  const handleRecordingToggle = () => {
+  const handleRecordingToggle = React.useCallback(() => {
     if (!isRecording) {
       // Check if already on home page
       if (pathname === '/') {
@@ -158,14 +161,14 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       }
     }
     // The actual recording start/stop is handled in the Home component
-  };
+  }, [isRecording, pathname, router]);
 
   // Monotonic guard so a slow earlier search response can't clobber a newer one.
   // invoke() isn't abortable, so we discard stale results rather than cancelling them.
   const searchSeqRef = React.useRef(0);
 
   // Function to search through meeting transcripts
-  const searchTranscripts = async (query: string) => {
+  const searchTranscripts = React.useCallback(async (query: string) => {
     // Bump for every call (including the empty-query reset) so any inflight response
     // for a prior query is discarded.
     const seq = ++searchSeqRef.current;
@@ -190,7 +193,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       // Only clear the spinner if this is still the latest request.
       if (seq === searchSeqRef.current) setIsSearching(false);
     }
-  };
+  }, []);
 
   // Summary polling management
   const startSummaryPolling = React.useCallback((
@@ -285,26 +288,45 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 
 
 
-  return (
-    <SidebarContext.Provider value={{
-      currentMeeting,
-      setCurrentMeeting,
-      sidebarItems,
-      isCollapsed,
-      toggleCollapse,
-      meetings,
-      setMeetings,
-      isMeetingActive,
-      setIsMeetingActive,
-      handleRecordingToggle,
-      searchTranscripts,
-      searchResults,
-      isSearching,
-      startSummaryPolling,
-      stopSummaryPolling,
-      refetchMeetings: fetchMeetings,
+  // Memoized: this provider re-renders whenever recording state changes (it consumes
+  // useRecordingState), and an inline value object gave every useSidebar() consumer a
+  // new context identity on each of those renders — re-rendering the meetings list and
+  // meeting-details pages twice per second for the whole recording.
+  const value = React.useMemo(() => ({
+    currentMeeting,
+    setCurrentMeeting,
+    sidebarItems,
+    isCollapsed,
+    toggleCollapse,
+    meetings,
+    setMeetings,
+    isMeetingActive,
+    setIsMeetingActive,
+    handleRecordingToggle,
+    searchTranscripts,
+    searchResults,
+    isSearching,
+    startSummaryPolling,
+    stopSummaryPolling,
+    refetchMeetings: fetchMeetings,
+  }), [
+    currentMeeting,
+    sidebarItems,
+    isCollapsed,
+    toggleCollapse,
+    meetings,
+    isMeetingActive,
+    handleRecordingToggle,
+    searchTranscripts,
+    searchResults,
+    isSearching,
+    startSummaryPolling,
+    stopSummaryPolling,
+    fetchMeetings,
+  ]);
 
-    }}>
+  return (
+    <SidebarContext.Provider value={value}>
       {children}
     </SidebarContext.Provider>
   );

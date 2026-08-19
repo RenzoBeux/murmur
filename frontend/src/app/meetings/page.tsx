@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useRouter } from 'next/navigation';
 import { Calendar, Clock, FolderKanban, ListVideo, Search, X } from 'lucide-react';
@@ -172,16 +172,30 @@ export default function MeetingsPage() {
 
   // When searching, a meeting is a hit if its title matches OR its transcript
   // content matched in the FTS index. Content matches carry a snippet.
-  const hits: SearchHit[] | null =
-    meetings === null
-      ? null
-      : searching
-        ? meetings
-            .filter((m) => m.title.toLowerCase().includes(q) || contentMatches.has(m.id))
-            .map((m) => ({ ...m, matchContext: contentMatches.get(m.id) }))
-        : meetings;
+  // Memoized (with groups below) so unrelated re-renders — e.g. recording-state
+  // context updates while a recording runs — don't refilter/regroup the whole
+  // list and defeat MeetingCard's memo.
+  const hits: SearchHit[] | null = useMemo(
+    () =>
+      meetings === null
+        ? null
+        : searching
+          ? meetings
+              .filter((m) => m.title.toLowerCase().includes(q) || contentMatches.has(m.id))
+              .map((m) => ({ ...m, matchContext: contentMatches.get(m.id) }))
+          : meetings,
+    [meetings, searching, q, contentMatches],
+  );
 
-  const groups = !searching && hits ? groupMeetingsByDate(hits) : [];
+  const groups = useMemo(
+    () => (!searching && hits ? groupMeetingsByDate(hits) : []),
+    [searching, hits],
+  );
+
+  const handleOpen = useCallback(
+    (id: string) => router.push(`/meeting-details?id=${id}`),
+    [router],
+  );
 
   return (
     <div className="h-[calc(100vh-var(--titlebar-height))] bg-background flex flex-col">
@@ -246,7 +260,7 @@ export default function MeetingsPage() {
                     <MeetingCard
                       m={m}
                       project={m.projectId ? projectsById.get(m.projectId) : undefined}
-                      onClick={() => router.push(`/meeting-details?id=${m.id}`)}
+                      onOpen={handleOpen}
                       onRenamed={handleRenamed}
                       onTrashed={handleTrashed}
                       onRestored={handleRestored}
@@ -268,7 +282,7 @@ export default function MeetingsPage() {
                         <MeetingCard
                           m={m}
                           project={m.projectId ? projectsById.get(m.projectId) : undefined}
-                          onClick={() => router.push(`/meeting-details?id=${m.id}`)}
+                          onOpen={handleOpen}
                           onRenamed={handleRenamed}
                           onTrashed={handleTrashed}
                           onRestored={handleRestored}
@@ -286,17 +300,20 @@ export default function MeetingsPage() {
   );
 }
 
-function MeetingCard({
+// Memoized with a stable onOpen(id) callback: while a recording runs, ancestor
+// context updates re-render this page — without the memo every row (card + its
+// actions menu and dialogs) was reconciled on each update and search keystroke.
+const MeetingCard = React.memo(function MeetingCard({
   m,
   project,
-  onClick,
+  onOpen,
   onRenamed,
   onTrashed,
   onRestored,
 }: {
   m: SearchHit;
   project?: Project;
-  onClick: () => void;
+  onOpen: (meetingId: string) => void;
   onRenamed: (meetingId: string, newTitle: string) => void;
   onTrashed: (meetingId: string) => void;
   onRestored: () => void;
@@ -305,7 +322,7 @@ function MeetingCard({
     // The card body is the button and the actions menu sits beside it — a
     // button nested inside a button would be invalid markup.
     <div className="group relative rounded-lg border border-border bg-card hover:bg-accent transition-colors">
-      <button onClick={onClick} className="w-full text-left p-4 pr-12">
+      <button onClick={() => onOpen(m.id)} className="w-full text-left p-4 pr-12">
         <div className="flex items-center gap-4">
           <div className="flex-1 min-w-0">
             <p className="font-medium truncate">{m.title}</p>
@@ -349,4 +366,4 @@ function MeetingCard({
       </div>
     </div>
   );
-}
+});

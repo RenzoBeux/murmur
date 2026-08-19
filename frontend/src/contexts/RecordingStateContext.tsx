@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { recordingService } from '@/services/recordingService';
+import { debugLog } from '@/lib/debug';
 
 /**
  * Recording state synchronized with backend
@@ -103,16 +104,33 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
             prev.status === RecordingStatus.ERROR ||
             prev.status === RecordingStatus.STARTING);
 
-        return {
+        const next = {
           ...prev,
           isRecording: backendState.is_recording,
           isPaused: backendState.is_paused,
           isActive: backendState.is_active,
           isMicMuted: backendState.is_mic_muted ?? false,
-          recordingDuration: backendState.recording_duration,
-          activeDuration: backendState.active_duration,
+          // Quantize to whole seconds: the UI only ever displays floored seconds,
+          // and the raw f64 changes on every poll — which forced a context-identity
+          // change (and an app-wide consumer re-render) 2x/s for the whole recording.
+          recordingDuration:
+            backendState.recording_duration == null ? null : Math.floor(backendState.recording_duration),
+          activeDuration:
+            backendState.active_duration == null ? null : Math.floor(backendState.active_duration),
           status: shouldRestoreStatus ? RecordingStatus.RECORDING : prev.status,
         };
+
+        // Bail out (keep the same object) when nothing observable changed, so the
+        // 500ms/3s polls don't cascade re-renders through every context consumer.
+        const unchanged =
+          next.isRecording === prev.isRecording &&
+          next.isPaused === prev.isPaused &&
+          next.isActive === prev.isActive &&
+          next.isMicMuted === prev.isMicMuted &&
+          next.recordingDuration === prev.recordingDuration &&
+          next.activeDuration === prev.activeDuration &&
+          next.status === prev.status;
+        return unchanged ? prev : next;
       });
 
       // Keep polling alive whenever the backend reports an active recording
@@ -121,7 +139,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
         startPolling();
       }
 
-      console.log('[RecordingStateContext] Synced with backend:', backendState);
+      debugLog('[RecordingStateContext] Synced with backend:', backendState);
     } catch (error) {
       console.error('[RecordingStateContext] Failed to sync with backend:', error);
       // Don't update state on error - keep current state

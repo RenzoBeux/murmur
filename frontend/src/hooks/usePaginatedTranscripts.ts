@@ -167,8 +167,10 @@ export function usePaginatedTranscripts({
         reset();
         setIsLoading(true);
         try {
-            await loadMetadata();
-            await loadTranscriptsAtOffset(0, false);
+            // Independent queries — load in parallel so the full-screen loader on
+            // meeting-details lasts one round-trip, not two. Each callee handles its
+            // own errors/state, so allSettled just waits for both.
+            await Promise.allSettled([loadMetadata(), loadTranscriptsAtOffset(0, false)]);
         } finally {
             setIsLoading(false);
         }
@@ -190,8 +192,8 @@ export function usePaginatedTranscripts({
         const loadInitial = async () => {
             setIsLoading(true);
             try {
-                await loadMetadata();
-                await loadTranscriptsAtOffset(0, false);
+                // Parallel for the same reason as refetch() above.
+                await Promise.allSettled([loadMetadata(), loadTranscriptsAtOffset(0, false)]);
             } finally {
                 setIsLoading(false);
             }

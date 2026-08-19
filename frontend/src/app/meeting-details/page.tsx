@@ -354,6 +354,31 @@ function MeetingDetailsContent() {
   // refetch (transcripts reloading while meetingDetails is already populated) we
   // keep PageContent — and any open dialog — mounted instead of unmounting it.
   if (!meetingDetails) {
+    // A failed load used to leave this spinner up forever — indistinguishable
+    // from a frozen app. Surface the error with a way out instead.
+    if (error) {
+      return (
+        <div className="flex flex-col items-center justify-center gap-4 h-[calc(100vh-var(--titlebar-height))] px-6">
+          <p className="text-sm text-muted-foreground text-center max-w-md">
+            Couldn&apos;t load this meeting: {error}
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => { setError(null); refetch(); }}
+              className="px-3 py-1.5 text-sm font-medium rounded-lg bg-accent text-foreground hover:bg-accent/80 transition-colors"
+            >
+              Try again
+            </button>
+            <button
+              onClick={() => router.push('/meetings')}
+              className="px-3 py-1.5 text-sm font-medium rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+            >
+              Back to meetings
+            </button>
+          </div>
+        </div>
+      );
+    }
     return <div className="flex items-center justify-center h-[calc(100vh-var(--titlebar-height))]">
       <LoaderIcon className="animate-spin size-6 " />
     </div>;

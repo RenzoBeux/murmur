@@ -60,6 +60,13 @@ export function useMeetingActions({
   const [draftTitle, setDraftTitle] = useState(title);
   const [isConfirmingTrash, setIsConfirmingTrash] = useState(false);
   const [isMovingToProject, setIsMovingToProject] = useState(false);
+  // The dialogs mount only after a menu action is first used. The meetings list
+  // renders one of these hooks per row, and mounting three closed Radix dialogs
+  // per meeting made every list reconcile disproportionately expensive. Both
+  // setStates in the open* callbacks batch, so the first mounted render already
+  // has the dialog open (enter animation plays); it stays mounted afterwards so
+  // exit animations survive.
+  const [dialogsMounted, setDialogsMounted] = useState(false);
   const titleInputRef = React.useRef<HTMLInputElement>(null);
 
   // Focus the field ourselves once the dialog is open. Radix's own autofocus is
@@ -80,13 +87,20 @@ export function useMeetingActions({
   }, [isRenaming]);
 
   const openRename = useCallback(() => {
+    setDialogsMounted(true);
     setDraftTitle(title);
     setIsRenaming(true);
   }, [title]);
 
-  const openTrash = useCallback(() => setIsConfirmingTrash(true), []);
+  const openTrash = useCallback(() => {
+    setDialogsMounted(true);
+    setIsConfirmingTrash(true);
+  }, []);
 
-  const openMoveToProject = useCallback(() => setIsMovingToProject(true), []);
+  const openMoveToProject = useCallback(() => {
+    setDialogsMounted(true);
+    setIsMovingToProject(true);
+  }, []);
 
   const closeRename = useCallback(() => {
     setIsRenaming(false);
@@ -154,7 +168,7 @@ export function useMeetingActions({
     }
   }, [meetingId, onRestored, onTrashed, title]);
 
-  const dialogs = (
+  const dialogs = !dialogsMounted ? null : (
     <>
       <Dialog open={isRenaming} onOpenChange={(open) => !open && closeRename()}>
         <DialogContent

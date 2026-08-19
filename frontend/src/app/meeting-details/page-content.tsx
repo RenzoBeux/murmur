@@ -10,7 +10,7 @@ import { ChatPanel } from '@/components/MeetingDetails/ChatPanel';
 import { AttachmentsPanel } from '@/components/MeetingDetails/AttachmentsPanel';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { FileText, MessageSquare, Paperclip, Pencil } from 'lucide-react';
+import { FileText, FolderKanban, MessageSquare, Paperclip, Pencil } from 'lucide-react';
 import { FileDropClaim, useFileDropTarget } from '@/contexts/FileDropContext';
 import {
   MeetingActionsDropdown,
@@ -18,6 +18,7 @@ import {
 } from '@/components/MeetingActions/MeetingActionsMenu';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useRouter } from 'next/navigation';
+import { Project, getMeetingProject, onProjectsChanged } from '@/lib/projectsApi';
 
 // Custom hooks
 import { useAttachments } from '@/hooks/meeting-details/useAttachments';
@@ -204,6 +205,27 @@ export default function PageContent({
   // any dialog open inside it.
   const router = useRouter();
   const { setCurrentMeeting, refetchMeetings } = useSidebar();
+
+  // The project this meeting is filed under, shown as a header chip and used to
+  // mark the current choice in the move dialog. Refetched when any view moves it.
+  const [project, setProject] = useState<Project | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      getMeetingProject(meeting.id)
+        .then((p) => {
+          if (!cancelled) setProject(p);
+        })
+        .catch((e) => console.error('Failed to load meeting project:', e));
+    };
+    load();
+    const unsubscribe = onProjectsChanged(load);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [meeting.id]);
+
   const meetingActions = useMeetingActions({
     meetingId: meeting.id,
     title: meetingData.meetingTitle,
@@ -214,6 +236,8 @@ export default function PageContent({
       router.push('/');
     },
     onRestored: refetchMeetings,
+    projectId: project?.id ?? null,
+    onMovedToProject: setProject,
   });
 
   // Auto-generate summary when flag is set
@@ -260,6 +284,16 @@ export default function PageContent({
           <h1 className="truncate text-base font-semibold">{meetingData.meetingTitle}</h1>
           <Pencil className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
         </button>
+        {project && (
+          <button
+            onClick={() => router.push(`/project-details?id=${project.id}`)}
+            title={`Open project "${project.name}"`}
+            className="hidden shrink-0 items-center gap-1.5 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground sm:inline-flex"
+          >
+            <FolderKanban className="h-3 w-3" />
+            <span className="max-w-[12rem] truncate">{project.name}</span>
+          </button>
+        )}
         {meeting.created_at && (
           <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
             {new Date(meeting.created_at).toLocaleString(undefined, {
@@ -275,6 +309,7 @@ export default function PageContent({
           <MeetingActionsDropdown
             onRename={meetingActions.openRename}
             onTrash={meetingActions.openTrash}
+            onMoveToProject={meetingActions.openMoveToProject}
           />
         </div>
       </div>

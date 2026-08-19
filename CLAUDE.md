@@ -161,8 +161,8 @@ await listen<TranscriptUpdate>('transcript-update', (event) => {
 **Location**: `frontend/src-tauri/src/database/`
 
 - `manager.rs` — owns the sqlx SQLite pool, runs migrations from `frontend/src-tauri/migrations/`
-- `repositories/` — one repository per aggregate: `meeting.rs`, `transcript.rs`, `transcript_chunk.rs`, `summary.rs`, `setting.rs`, `chat.rs`
-- Tauri commands in `src/api/api.rs` and `src/api/chat_api.rs` call repositories via `state.db_manager.pool()`
+- `repositories/` — one repository per aggregate: `meeting.rs`, `project.rs`, `transcript.rs`, `transcript_chunk.rs`, `summary.rs`, `setting.rs`, `chat.rs`
+- Tauri commands in `src/api/api.rs`, `src/api/chat_api.rs` and `src/api/projects_api.rs` call repositories via `state.db_manager.pool()`
 
 **Adding a schema change**: add a timestamped migration file under `frontend/src-tauri/migrations/` (e.g. `20260707120000_description.sql`); it runs automatically at startup.
 

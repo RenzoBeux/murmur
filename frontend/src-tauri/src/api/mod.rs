@@ -2,6 +2,7 @@ pub mod api;
 pub mod attachments_api;
 pub mod chat_api;
 pub mod commands;
+pub mod projects_api;
 
 pub use api::*;
 // Don't re-export commands to avoid conflicts - lib.rs will import directly

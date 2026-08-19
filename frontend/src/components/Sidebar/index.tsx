@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, PanelLeftClose, PanelLeftOpen, Calendar, Home, Trash2, Mic, Square, Plus, NotebookPen, Upload, List } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Settings, PanelLeftClose, PanelLeftOpen, Calendar, Home, Trash2, Mic, Square, Plus, NotebookPen, Upload, List, FolderKanban } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { getVersion } from '@tauri-apps/api/app';
@@ -258,6 +258,8 @@ const Sidebar: React.FC = () => {
     const isSettingsPage = pathname === '/settings';
     const isTrashPage = pathname === '/trash';
     const isMeetingsListPage = pathname === '/meetings';
+    // A project's own page belongs to the same nav entry as the projects list.
+    const isProjectsPage = pathname === '/projects' || pathname === '/project-details';
 
     return (
       <TooltipProvider>
@@ -304,6 +306,21 @@ const Sidebar: React.FC = () => {
             </TooltipTrigger>
             <TooltipContent side="right">
               <p>Meetings</p>
+            </TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => router.push('/projects')}
+                className={`p-2 rounded-lg transition-colors duration-150 ${isProjectsPage ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+                  }`}
+              >
+                <FolderKanban className="w-5 h-5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              <p>Projects</p>
             </TooltipContent>
           </Tooltip>
 
@@ -515,6 +532,14 @@ const Sidebar: React.FC = () => {
                 >
                   <List className="w-4 h-4 mr-2" />
                   <span>Meetings</span>
+                </div>
+                <div
+                  onClick={() => router.push('/projects')}
+                  className={`p-3 text-sm font-medium items-center h-10 flex mx-3 mt-1 rounded-lg cursor-pointer transition-colors ${pathname === '/projects' || pathname === '/project-details' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-accent'
+                    }`}
+                >
+                  <FolderKanban className="w-4 h-4 mr-2" />
+                  <span>Projects</span>
                 </div>
               </>
             )}

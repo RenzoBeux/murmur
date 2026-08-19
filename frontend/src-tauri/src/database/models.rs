@@ -9,6 +9,18 @@ pub struct MeetingModel {
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
     pub folder_path: Option<String>,
+    /// The project this meeting is filed under, or None when unfiled.
+    pub project_id: Option<String>,
+}
+
+/// A named folder grouping meetings. See `ProjectsRepository`.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct ProjectModel {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]

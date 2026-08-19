@@ -3,15 +3,18 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useRouter } from 'next/navigation';
-import { Calendar, Clock, ListVideo, Search, X } from 'lucide-react';
+import { Calendar, Clock, FolderKanban, ListVideo, Search, X } from 'lucide-react';
 import { MeetingActionsMenu } from '@/components/MeetingActions/MeetingActionsMenu';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { groupMeetingsByDate } from '@/lib/meetingGrouping';
+import { listProjects, onProjectsChanged } from '@/lib/projectsApi';
 
 interface MeetingRow {
   id: string;
   title: string;
   createdAt?: string;
+  /** The project the meeting is filed under, or null when unfiled. */
+  projectId?: string | null;
 }
 
 // Shape returned by the FTS5-backed `api_search_transcripts` command.
@@ -48,6 +51,7 @@ export default function MeetingsPage() {
   const router = useRouter();
   const { refetchMeetings } = useSidebar();
   const [meetings, setMeetings] = useState<MeetingRow[] | null>(null);
+  const [projectNames, setProjectNames] = useState<Map<string, string>>(new Map());
   const [query, setQuery] = useState('');
   // Transcript-content matches from the backend FTS index (id -> snippet).
   const [contentMatches, setContentMatches] = useState<Map<string, string>>(new Map());
@@ -55,19 +59,47 @@ export default function MeetingsPage() {
 
   const loadMeetings = useCallback(async () => {
     try {
-      const rows = await invoke<Array<{ id: string; title: string; created_at: string }>>(
-        'api_get_meetings',
+      const rows = await invoke<
+        Array<{ id: string; title: string; created_at: string; project_id: string | null }>
+      >('api_get_meetings');
+      setMeetings(
+        rows.map((r) => ({
+          id: r.id,
+          title: r.title,
+          createdAt: r.created_at,
+          projectId: r.project_id,
+        })),
       );
-      setMeetings(rows.map((r) => ({ id: r.id, title: r.title, createdAt: r.created_at })));
     } catch (e) {
       console.error('Failed to load meetings:', e);
       setMeetings([]);
     }
   }, []);
 
+  // Project names for the card chips, keyed by id. Cheap enough to refetch
+  // alongside the meetings whenever a move happens anywhere in the app.
+  const loadProjects = useCallback(async () => {
+    try {
+      const projects = await listProjects();
+      setProjectNames(new Map(projects.map((p) => [p.id, p.name])));
+    } catch (e) {
+      console.error('Failed to load projects:', e);
+    }
+  }, []);
+
   useEffect(() => {
     loadMeetings();
-  }, [loadMeetings]);
+    loadProjects();
+  }, [loadMeetings, loadProjects]);
+
+  useEffect(
+    () =>
+      onProjectsChanged(() => {
+        loadMeetings();
+        loadProjects();
+      }),
+    [loadMeetings, loadProjects],
+  );
 
   // Rename/trash mutate this page's list optimistically; the sidebar keeps its
   // own copy of the meetings, so it needs a refetch to stay in sync.
@@ -212,6 +244,7 @@ export default function MeetingsPage() {
                   <li key={m.id}>
                     <MeetingCard
                       m={m}
+                      projectName={m.projectId ? projectNames.get(m.projectId) : undefined}
                       onClick={() => router.push(`/meeting-details?id=${m.id}`)}
                       onRenamed={handleRenamed}
                       onTrashed={handleTrashed}
@@ -233,6 +266,7 @@ export default function MeetingsPage() {
                       <li key={m.id}>
                         <MeetingCard
                           m={m}
+                          projectName={m.projectId ? projectNames.get(m.projectId) : undefined}
                           onClick={() => router.push(`/meeting-details?id=${m.id}`)}
                           onRenamed={handleRenamed}
                           onTrashed={handleTrashed}
@@ -253,12 +287,14 @@ export default function MeetingsPage() {
 
 function MeetingCard({
   m,
+  projectName,
   onClick,
   onRenamed,
   onTrashed,
   onRestored,
 }: {
   m: SearchHit;
+  projectName?: string;
   onClick: () => void;
   onRenamed: (meetingId: string, newTitle: string) => void;
   onTrashed: (meetingId: string) => void;
@@ -272,6 +308,12 @@ function MeetingCard({
         <div className="flex items-center gap-4">
           <div className="flex-1 min-w-0">
             <p className="font-medium truncate">{m.title}</p>
+            {projectName && (
+              <span className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+                <FolderKanban className="w-3 h-3 shrink-0" />
+                <span className="truncate">{projectName}</span>
+              </span>
+            )}
           </div>
           <div className="shrink-0 flex items-center gap-4 text-xs text-muted-foreground">
             <span className="flex items-center gap-1.5">
@@ -294,6 +336,7 @@ function MeetingCard({
         <MeetingActionsMenu
           meetingId={m.id}
           title={m.title}
+          projectId={m.projectId ?? null}
           onRenamed={(newTitle) => onRenamed(m.id, newTitle)}
           onTrashed={() => onTrashed(m.id)}
           onRestored={onRestored}

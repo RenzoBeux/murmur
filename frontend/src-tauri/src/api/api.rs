@@ -28,6 +28,21 @@ pub struct Meeting {
     pub title: String,
     pub created_at: String,
     pub updated_at: String,
+    /// The project this meeting is filed under, or None when unfiled. The UI
+    /// resolves the name from its own projects list rather than joining here.
+    pub project_id: Option<String>,
+}
+
+impl From<MeetingModel> for Meeting {
+    fn from(m: MeetingModel) -> Self {
+        Meeting {
+            id: m.id,
+            title: m.title,
+            created_at: m.created_at.0.to_rfc3339(),
+            updated_at: m.updated_at.0.to_rfc3339(),
+            project_id: m.project_id,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -194,15 +209,7 @@ pub async fn api_get_meetings<R: Runtime>(
         Ok(meeting_models) => {
             log_info!("Successfully got {} meetings", meeting_models.len());
 
-            let result: Vec<Meeting> = meeting_models
-                .into_iter()
-                .map(|m| Meeting {
-                    id: m.id,
-                    title: m.title,
-                    created_at: m.created_at.0.to_rfc3339(),
-                    updated_at: m.updated_at.0.to_rfc3339(),
-                })
-                .collect();
+            let result: Vec<Meeting> = meeting_models.into_iter().map(Meeting::from).collect();
             Ok(result)
         }
         Err(e) => {

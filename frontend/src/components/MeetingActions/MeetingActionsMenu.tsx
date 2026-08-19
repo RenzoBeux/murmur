@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { MoreVertical, Pencil, Trash2 } from 'lucide-react';
+import { FolderInput, MoreVertical, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { ConfirmationModal } from '@/components/ConfirmationModal/confirmation-modal';
@@ -21,6 +21,8 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { MoveToProjectDialog } from '@/components/Projects/MoveToProjectDialog';
+import type { Project } from '@/lib/projectsApi';
 
 export interface MeetingActionsOptions {
   meetingId: string;
@@ -32,6 +34,10 @@ export interface MeetingActionsOptions {
   onTrashed?: () => void;
   /** Called after an Undo restored the meeting from the trash. */
   onRestored?: () => void;
+  /** The project the meeting is currently filed under, if the caller knows it. */
+  projectId?: string | null;
+  /** Called once the meeting has been filed (null = removed from its project). */
+  onMovedToProject?: (project: Project | null) => void;
 }
 
 /**
@@ -47,10 +53,13 @@ export function useMeetingActions({
   onRenamed,
   onTrashed,
   onRestored,
+  projectId,
+  onMovedToProject,
 }: MeetingActionsOptions) {
   const [isRenaming, setIsRenaming] = useState(false);
   const [draftTitle, setDraftTitle] = useState(title);
   const [isConfirmingTrash, setIsConfirmingTrash] = useState(false);
+  const [isMovingToProject, setIsMovingToProject] = useState(false);
   const titleInputRef = React.useRef<HTMLInputElement>(null);
 
   // Focus the field ourselves once the dialog is open. Radix's own autofocus is
@@ -76,6 +85,8 @@ export function useMeetingActions({
   }, [title]);
 
   const openTrash = useCallback(() => setIsConfirmingTrash(true), []);
+
+  const openMoveToProject = useCallback(() => setIsMovingToProject(true), []);
 
   const closeRename = useCallback(() => {
     setIsRenaming(false);
@@ -185,15 +196,25 @@ export function useMeetingActions({
         onConfirm={confirmTrash}
         onCancel={() => setIsConfirmingTrash(false)}
       />
+
+      <MoveToProjectDialog
+        open={isMovingToProject}
+        onOpenChange={setIsMovingToProject}
+        meetingIds={[meetingId]}
+        currentProjectId={projectId}
+        onMoved={onMovedToProject}
+      />
     </>
   );
 
-  return { openRename, openTrash, dialogs };
+  return { openRename, openTrash, openMoveToProject, dialogs };
 }
 
 interface MeetingActionsDropdownProps {
   onRename: () => void;
   onTrash: () => void;
+  /** Omit to hide the item (e.g. where a project context makes it redundant). */
+  onMoveToProject?: () => void;
   align?: 'start' | 'end' | 'center';
   /** Extra classes for the kebab trigger. */
   className?: string;
@@ -207,6 +228,7 @@ interface MeetingActionsDropdownProps {
 export function MeetingActionsDropdown({
   onRename,
   onTrash,
+  onMoveToProject,
   align = 'end',
   className = '',
 }: MeetingActionsDropdownProps) {
@@ -243,6 +265,12 @@ export function MeetingActionsDropdown({
           <Pencil className="w-4 h-4" />
           Rename
         </DropdownMenuItem>
+        {onMoveToProject && (
+          <DropdownMenuItem onSelect={select(onMoveToProject)}>
+            <FolderInput className="w-4 h-4" />
+            Move to project
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem
           onSelect={select(onTrash)}
           className="text-destructive focus:text-destructive focus:bg-destructive/10"
@@ -262,13 +290,14 @@ export interface MeetingActionsMenuProps extends MeetingActionsOptions {
 
 /** Self-contained kebab menu: the dropdown plus its rename/trash dialogs. */
 export function MeetingActionsMenu({ align, className, ...options }: MeetingActionsMenuProps) {
-  const { openRename, openTrash, dialogs } = useMeetingActions(options);
+  const { openRename, openTrash, openMoveToProject, dialogs } = useMeetingActions(options);
 
   return (
     <>
       <MeetingActionsDropdown
         onRename={openRename}
         onTrash={openTrash}
+        onMoveToProject={openMoveToProject}
         align={align}
         className={className}
       />

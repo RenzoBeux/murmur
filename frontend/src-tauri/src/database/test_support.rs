@@ -61,6 +61,7 @@ mod tests {
             ("meetings", "folder_path"),
             ("meetings", "attendees"),
             ("meetings", "deleted_at"),
+            ("meetings", "project_id"),
             ("transcripts", "speaker"),
             ("transcripts", "audio_start_time"),
             ("summary_processes", "result_backup"),
@@ -79,6 +80,7 @@ mod tests {
             "search_index",
             "meeting_tags",
             "meeting_attachments",
+            "projects",
         ] {
             let n: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
                 .fetch_one(&pool)

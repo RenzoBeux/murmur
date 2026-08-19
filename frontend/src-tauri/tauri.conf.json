@@ -73,6 +73,7 @@
                         "notification:allow-is-permission-granted",
                         "process:default",
                         "opener:allow-open-url",
+                        "clipboard-manager:allow-write-text",
                         {
                             "identifier": "fs:scope",
                             "allow": [

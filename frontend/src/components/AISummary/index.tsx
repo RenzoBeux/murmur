@@ -5,6 +5,8 @@ import { Summary, Block } from '@/types';
 import { Section } from './Section';
 import { EditableTitle } from '../EditableTitle';
 import { AlertTriangle } from 'lucide-react';
+import { toast } from 'sonner';
+import { writeTextToClipboard } from '@/lib/clipboard';
 
 interface Props {
   summary: Summary | null;
@@ -423,7 +425,10 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
             return '';
           }).filter(Boolean);
 
-          navigator.clipboard.writeText(blockContents.join('\n'));
+          writeTextToClipboard(blockContents.join('\n')).catch(error => {
+            console.error('❌ Failed to copy blocks:', error);
+            toast.error("Failed to copy to clipboard");
+          });
         }
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedBlocks.length > 1) {
         e.preventDefault();
@@ -520,7 +525,10 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
 
   const handleCopyBlocks = useCallback(() => {
     const content = getSelectedBlocksContent();
-    navigator.clipboard.writeText(content);
+    writeTextToClipboard(content).catch(error => {
+      console.error('❌ Failed to copy blocks:', error);
+      toast.error("Failed to copy to clipboard");
+    });
     setContextMenu(prev => ({ ...prev, visible: false }));
   }, [getSelectedBlocksContent]);
 
@@ -770,7 +778,10 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
           <button
             onClick={() => {
               const markdown = convertToMarkdown();
-              navigator.clipboard.writeText(markdown);
+              writeTextToClipboard(markdown).catch(error => {
+                console.error('❌ Failed to copy markdown:', error);
+                toast.error("Failed to copy to clipboard");
+              });
             }}
             className="px-2 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded-md flex items-center space-x-1"
           >

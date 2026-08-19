@@ -7,6 +7,7 @@ import {
   buildTranscriptMarkdown,
   buildSummaryMarkdown,
 } from '@/lib/meetingMarkdown';
+import { writeTextToClipboard } from '@/lib/clipboard';
 
 interface UseCopyOperationsProps {
   meeting: any;
@@ -39,8 +40,13 @@ export function useCopyOperations({
     }
 
     const markdown = buildTranscriptMarkdown(meeting, meetingTitle, allTranscripts);
-    await navigator.clipboard.writeText(markdown);
-    toast.success("Transcript copied to clipboard");
+    try {
+      await writeTextToClipboard(markdown);
+      toast.success("Transcript copied to clipboard");
+    } catch (error) {
+      console.error('❌ Failed to copy transcript:', error);
+      toast.error("Failed to copy transcript");
+    }
   }, [meeting, meetingTitle]);
 
   const handleCopySummary = useCallback(async () => {
@@ -52,7 +58,7 @@ export function useCopyOperations({
         return;
       }
 
-      await navigator.clipboard.writeText(fullMarkdown);
+      await writeTextToClipboard(fullMarkdown);
       toast.success("Summary copied to clipboard");
     } catch (error) {
       console.error('❌ Failed to copy summary:', error);

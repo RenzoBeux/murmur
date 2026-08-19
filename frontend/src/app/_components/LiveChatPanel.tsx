@@ -36,7 +36,11 @@ export function LiveChatPanel({ onClose }: LiveChatPanelProps) {
     status === RecordingStatus.PROCESSING_TRANSCRIPTS ||
     status === RecordingStatus.SAVING;
 
-  const canAsk = isRecording && status === RecordingStatus.RECORDING && hasTranscript;
+  // Gate on the backend-synced isRecording flag, not the exact status enum: the
+  // status can lag behind reality (e.g. a recording-started event missed during a
+  // reload leaves it in STARTING) and must never dead-lock the composer while a
+  // recording is genuinely running.
+  const canAsk = isRecording && !isSavingOrStopping && hasTranscript;
   const placeholder = !isRecording
     ? isSavingOrStopping
       ? 'Recording is being saved…'

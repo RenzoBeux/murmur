@@ -322,7 +322,9 @@ export default function Home() {
         {(hasMicrophone || isRecording) &&
           status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
           status !== RecordingStatus.SAVING && (
-            <div className="fixed bottom-12 left-0 right-0 z-10">
+            // Inset by the Ask-AI drawer width so the pill stays centered over the
+            // transcript instead of floating over (and under) the drawer.
+            <div className={`fixed bottom-12 left-0 z-10 ${showAskAi ? 'right-[380px] xl:right-[420px]' : 'right-0'}`}>
               <div
                 className={`flex justify-center pl-3 md:pl-8 transition-[margin] duration-300 ${
                   sidebarCollapsed ? 'ml-16' : 'ml-16 md:ml-64'
@@ -357,6 +359,7 @@ export default function Home() {
           isProcessing={status === RecordingStatus.PROCESSING_TRANSCRIPTS && !recordingState.isRecording}
           isSaving={status === RecordingStatus.SAVING}
           sidebarCollapsed={sidebarCollapsed}
+          askAiOpen={showAskAi}
         />
       </div>
     </motion.div>

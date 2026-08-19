@@ -91,13 +91,17 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
       const backendState = await recordingService.getRecordingState();
 
       setState(prev => {
-        // If a page reload landed us in IDLE/ERROR while the backend is still
-        // recording, restore the RECORDING status. Guard against clobbering an
-        // in-flight STOPPING/PROCESSING/SAVING transition (only lift from a
+        // If a page reload landed us in IDLE/ERROR/STARTING while the backend is
+        // still recording, restore the RECORDING status. STARTING is included
+        // because a missed recording-started event (e.g. fired mid-reload) would
+        // otherwise leave the status stuck there forever. Guard against clobbering
+        // an in-flight STOPPING/PROCESSING/SAVING transition (only lift from a
         // resting state).
         const shouldRestoreStatus =
           backendState.is_recording &&
-          (prev.status === RecordingStatus.IDLE || prev.status === RecordingStatus.ERROR);
+          (prev.status === RecordingStatus.IDLE ||
+            prev.status === RecordingStatus.ERROR ||
+            prev.status === RecordingStatus.STARTING);
 
         return {
           ...prev,
@@ -253,6 +257,13 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
   useEffect(() => {
     console.log('[RecordingStateContext] Initial mount - syncing with backend');
     syncWithBackend();
+    // Slow safety-net reconciliation. The fast 500ms poll only runs once a
+    // recording is KNOWN (started event or a sync that saw it) — if the
+    // recording-started event is missed entirely, nothing else would ever
+    // correct isRecording/status, leaving the UI (e.g. the live Ask-AI
+    // composer) locked while transcripts visibly stream in.
+    const reconcile = setInterval(syncWithBackend, 3000);
+    return () => clearInterval(reconcile);
   }, []);
 
   // NEW: Computed helpers from status

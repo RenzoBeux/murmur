@@ -5,6 +5,7 @@ interface StatusOverlaysProps {
 
   // Layout
   sidebarCollapsed: boolean;  // For responsive margin calculation
+  askAiOpen?: boolean;        // Inset by the Ask-AI drawer width when it is open
 }
 
 // Internal reusable component for individual status overlays
@@ -12,13 +13,14 @@ interface StatusOverlayProps {
   show: boolean;
   message: string;
   sidebarCollapsed: boolean;
+  askAiOpen?: boolean;
 }
 
-function StatusOverlay({ show, message, sidebarCollapsed }: StatusOverlayProps) {
+function StatusOverlay({ show, message, sidebarCollapsed, askAiOpen }: StatusOverlayProps) {
   if (!show) return null;
 
   return (
-    <div className="fixed bottom-4 left-0 right-0 z-10">
+    <div className={`fixed bottom-4 left-0 z-10 ${askAiOpen ? 'right-[380px] xl:right-[420px]' : 'right-0'}`}>
       <div
         className={`flex justify-center pl-3 md:pl-8 transition-[margin] duration-300 ${
           sidebarCollapsed ? 'ml-16' : 'ml-16 md:ml-64'
@@ -39,7 +41,8 @@ function StatusOverlay({ show, message, sidebarCollapsed }: StatusOverlayProps) 
 export function StatusOverlays({
   isProcessing,
   isSaving,
-  sidebarCollapsed
+  sidebarCollapsed,
+  askAiOpen
 }: StatusOverlaysProps) {
   return (
     <>
@@ -48,6 +51,7 @@ export function StatusOverlays({
         show={isProcessing}
         message="Finalizing transcription..."
         sidebarCollapsed={sidebarCollapsed}
+        askAiOpen={askAiOpen}
       />
 
       {/* Saving status overlay - shown while saving transcript to database */}
@@ -55,6 +59,7 @@ export function StatusOverlays({
         show={isSaving}
         message="Saving transcript..."
         sidebarCollapsed={sidebarCollapsed}
+        askAiOpen={askAiOpen}
       />
     </>
   );

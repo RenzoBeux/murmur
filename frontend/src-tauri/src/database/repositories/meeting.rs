@@ -2,6 +2,7 @@ use crate::api::{MeetingDetails, MeetingTranscript};
 use crate::database::models::{MeetingModel, Transcript};
 use chrono::Utc;
 use sqlx::{Connection, Error as SqlxError, SqliteConnection, SqlitePool};
+use std::collections::HashMap;
 use tracing::{error, info};
 
 pub struct MeetingsRepository;
@@ -17,6 +18,39 @@ impl MeetingsRepository {
         .fetch_all(pool)
         .await?;
         Ok(meetings)
+    }
+
+    /// Recording length in seconds per meeting id, for the meeting lists.
+    ///
+    /// Derived from the transcript segments instead of being stored on the
+    /// meeting row: a segment's `audio_end_time` is its offset from the start of
+    /// the recording, so the largest one is how long the recording ran (minus
+    /// any trailing silence VAD dropped). Segments written before the audio
+    /// timing columns existed have NULLs there, so those meetings fall back to
+    /// the wall-clock span between their first and last segment timestamps.
+    /// Meetings with neither are simply absent from the map — the UI omits the
+    /// duration rather than showing a wrong one.
+    pub async fn get_meeting_durations(
+        pool: &SqlitePool,
+    ) -> Result<HashMap<String, f64>, SqlxError> {
+        let rows = sqlx::query_as::<_, (String, Option<f64>, Option<f64>)>(
+            "SELECT meeting_id, \
+                    MAX(COALESCE(audio_end_time, audio_start_time + duration)), \
+                    (julianday(MAX(timestamp)) - julianday(MIN(timestamp))) * 86400.0 \
+             FROM transcripts GROUP BY meeting_id",
+        )
+        .fetch_all(pool)
+        .await?;
+
+        let usable = |seconds: Option<f64>| seconds.filter(|s| s.is_finite() && *s > 0.0);
+
+        Ok(rows
+            .into_iter()
+            .filter_map(|(meeting_id, audio_seconds, wall_clock_seconds)| {
+                let seconds = usable(audio_seconds).or_else(|| usable(wall_clock_seconds))?;
+                Some((meeting_id, seconds))
+            })
+            .collect())
     }
 
     /// Trashed (soft-deleted) meetings for the Trash view: `(id, title, created_at,
@@ -585,6 +619,40 @@ mod tests {
 
         // A second delete is a no-op (already trashed).
         assert!(!MeetingsRepository::delete_meeting(&pool, "m1").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn meeting_durations_prefer_audio_timings_and_fall_back_to_wall_clock() {
+        let pool = migrated_pool().await;
+        insert_meeting(&pool, "m1", "Recorded").await;
+        insert_meeting(&pool, "m2", "Legacy").await;
+        insert_meeting(&pool, "m3", "Empty").await;
+
+        // m1: audio-timed segments — the last end time is the recording length.
+        sqlx::query(
+            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration) \
+             VALUES ('t1','m1','hello','2026-08-19T10:00:00+00:00', 0.0, 4.5, 4.5), \
+                    ('t2','m1','there','2026-08-19T10:02:00+00:00', 120.0, 125.25, 5.25)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // m2: pre-audio-timing rows — only the wall-clock span is available.
+        sqlx::query(
+            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp) \
+             VALUES ('t3','m2','old','2026-08-19T09:00:00+00:00'), \
+                    ('t4','m2','older','2026-08-19T09:30:00+00:00')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let durations = MeetingsRepository::get_meeting_durations(&pool).await.unwrap();
+
+        assert!((durations["m1"] - 125.25).abs() < 0.001, "uses max audio_end_time");
+        assert!((durations["m2"] - 1800.0).abs() < 0.5, "falls back to the timestamp span");
+        assert!(!durations.contains_key("m3"), "a meeting with no transcripts has no duration");
     }
 
     #[tokio::test]

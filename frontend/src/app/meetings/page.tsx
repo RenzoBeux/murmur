@@ -3,9 +3,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useRouter } from 'next/navigation';
-import { Calendar, Clock, FolderKanban, ListVideo, Search, X } from 'lucide-react';
+import { Calendar, Clock, FolderKanban, ListVideo, Search, Timer, X } from 'lucide-react';
 import { MeetingActionsMenu } from '@/components/MeetingActions/MeetingActionsMenu';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
+import { formatMeetingDuration } from '@/lib/meetingDuration';
 import { groupMeetingsByDate } from '@/lib/meetingGrouping';
 import { Project, listProjects, onProjectsChanged } from '@/lib/projectsApi';
 import { projectClasses } from '@/lib/projectColors';
@@ -16,6 +17,8 @@ interface MeetingRow {
   createdAt?: string;
   /** The project the meeting is filed under, or null when unfiled. */
   projectId?: string | null;
+  /** Recording length in seconds, or null when the backend can't derive one. */
+  durationSeconds?: number | null;
 }
 
 // Shape returned by the FTS5-backed `api_search_transcripts` command.
@@ -61,7 +64,13 @@ export default function MeetingsPage() {
   const loadMeetings = useCallback(async () => {
     try {
       const rows = await invoke<
-        Array<{ id: string; title: string; created_at: string; project_id: string | null }>
+        Array<{
+          id: string;
+          title: string;
+          created_at: string;
+          project_id: string | null;
+          duration_seconds: number | null;
+        }>
       >('api_get_meetings');
       setMeetings(
         rows.map((r) => ({
@@ -69,6 +78,7 @@ export default function MeetingsPage() {
           title: r.title,
           createdAt: r.created_at,
           projectId: r.project_id,
+          durationSeconds: r.duration_seconds,
         })),
       );
     } catch (e) {
@@ -318,6 +328,8 @@ const MeetingCard = React.memo(function MeetingCard({
   onTrashed: (meetingId: string) => void;
   onRestored: () => void;
 }) {
+  const duration = formatMeetingDuration(m.durationSeconds);
+
   return (
     // The card body is the button and the actions menu sits beside it — a
     // button nested inside a button would be invalid markup.
@@ -346,6 +358,12 @@ const MeetingCard = React.memo(function MeetingCard({
               <Clock className="w-3.5 h-3.5" />
               {fmtTime(m.createdAt)}
             </span>
+            {duration && (
+              <span className="flex items-center gap-1.5 tabular-nums" title="Recording length">
+                <Timer className="w-3.5 h-3.5" />
+                {duration}
+              </span>
+            )}
           </div>
         </div>
         {m.matchContext && (

@@ -10,6 +10,7 @@ import {
   LoaderIcon,
   Pencil,
   Plus,
+  Timer,
   Trash2,
   X,
 } from 'lucide-react';
@@ -21,6 +22,7 @@ import { MeetingActionsMenu } from '@/components/MeetingActions/MeetingActionsMe
 import { AddMeetingsDialog } from '@/components/Projects/AddMeetingsDialog';
 import { ProjectFormDialog } from '@/components/Projects/ProjectFormDialog';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
+import { formatMeetingDuration } from '@/lib/meetingDuration';
 import { projectClasses } from '@/lib/projectColors';
 import {
   Project,
@@ -214,69 +216,82 @@ function ProjectDetailsContent() {
             </div>
           ) : (
             <ul className="space-y-1.5">
-              {meetings.map((meeting) => (
-                <li key={meeting.id}>
-                  <div className="group relative overflow-hidden rounded-lg border border-border bg-card hover:bg-accent transition-colors">
-                    <span
-                      aria-hidden
-                      className={`absolute inset-y-0 left-0 w-1 ${projectClasses(project).solid}`}
-                    />
-                    <button
-                      onClick={() => router.push(`/meeting-details?id=${meeting.id}`)}
-                      className="w-full text-left p-4 pl-5 pr-20"
-                    >
-                      <div className="flex items-center gap-4">
-                        <div className="flex-1 min-w-0">
-                          <p className="font-medium truncate">{meeting.title}</p>
-                        </div>
-                        <div className="shrink-0 flex items-center gap-4 text-xs text-muted-foreground">
-                          <span className="flex items-center gap-1.5">
-                            <Calendar className="w-3.5 h-3.5" />
-                            {formatDate(meeting.createdAt)}
-                          </span>
-                          <span className="flex items-center gap-1.5">
-                            <Clock className="w-3.5 h-3.5" />
-                            {formatTime(meeting.createdAt)}
-                          </span>
-                        </div>
-                      </div>
-                    </button>
-                    <div className="absolute right-2 top-3.5 flex items-center gap-1">
-                      <button
-                        onClick={() => removeMeeting(meeting)}
-                        aria-label="Remove from project"
-                        title="Remove from project"
-                        className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                      <MeetingActionsMenu
-                        meetingId={meeting.id}
-                        title={meeting.title}
-                        onRenamed={(newTitle) => {
-                          setMeetings((prev) =>
-                            (prev ?? []).map((m) =>
-                              m.id === meeting.id ? { ...m, title: newTitle } : m,
-                            ),
-                          );
-                          refetchMeetings();
-                        }}
-                        onTrashed={() => {
-                          setMeetings((prev) => (prev ?? []).filter((m) => m.id !== meeting.id));
-                          setProject((prev) =>
-                            prev ? { ...prev, meetingCount: Math.max(0, prev.meetingCount - 1) } : prev,
-                          );
-                          refetchMeetings();
-                        }}
-                        onRestored={async () => {
-                          await load();
-                          await refetchMeetings();
-                        }}
+              {meetings.map((meeting) => {
+                const duration = formatMeetingDuration(meeting.durationSeconds);
+
+                return (
+                  <li key={meeting.id}>
+                    <div className="group relative overflow-hidden rounded-lg border border-border bg-card hover:bg-accent transition-colors">
+                      <span
+                        aria-hidden
+                        className={`absolute inset-y-0 left-0 w-1 ${projectClasses(project).solid}`}
                       />
+                      <button
+                        onClick={() => router.push(`/meeting-details?id=${meeting.id}`)}
+                        className="w-full text-left p-4 pl-5 pr-20"
+                      >
+                        <div className="flex items-center gap-4">
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium truncate">{meeting.title}</p>
+                          </div>
+                          <div className="shrink-0 flex items-center gap-4 text-xs text-muted-foreground">
+                            <span className="flex items-center gap-1.5">
+                              <Calendar className="w-3.5 h-3.5" />
+                              {formatDate(meeting.createdAt)}
+                            </span>
+                            <span className="flex items-center gap-1.5">
+                              <Clock className="w-3.5 h-3.5" />
+                              {formatTime(meeting.createdAt)}
+                            </span>
+                            {duration && (
+                              <span
+                                className="flex items-center gap-1.5 tabular-nums"
+                                title="Recording length"
+                              >
+                                <Timer className="w-3.5 h-3.5" />
+                                {duration}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </button>
+                      <div className="absolute right-2 top-3.5 flex items-center gap-1">
+                        <button
+                          onClick={() => removeMeeting(meeting)}
+                          aria-label="Remove from project"
+                          title="Remove from project"
+                          className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                        <MeetingActionsMenu
+                          meetingId={meeting.id}
+                          title={meeting.title}
+                          onRenamed={(newTitle) => {
+                            setMeetings((prev) =>
+                              (prev ?? []).map((m) =>
+                                m.id === meeting.id ? { ...m, title: newTitle } : m,
+                              ),
+                            );
+                            refetchMeetings();
+                          }}
+                          onTrashed={() => {
+                            setMeetings((prev) => (prev ?? []).filter((m) => m.id !== meeting.id));
+                            setProject((prev) =>
+                              prev ? { ...prev, meetingCount: Math.max(0, prev.meetingCount - 1) } : prev,
+                            );
+                            refetchMeetings();
+                          }}
+                          onRestored={async () => {
+                            await load();
+                            await refetchMeetings();
+                          }}
+                        />
+                      </div>
                     </div>
-                  </div>
-                </li>
-              ))}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>

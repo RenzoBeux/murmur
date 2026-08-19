@@ -25,6 +25,8 @@ export interface ProjectMeeting {
   title: string;
   createdAt?: string;
   projectId?: string | null;
+  /** Recording length in seconds, or null when the backend can't derive one. */
+  durationSeconds?: number | null;
 }
 
 // The Rust `Meeting` payload keeps snake_case for the fields that predate
@@ -35,10 +37,17 @@ interface RawMeeting {
   created_at: string;
   updated_at: string;
   project_id: string | null;
+  duration_seconds: number | null;
 }
 
 function toMeeting(raw: RawMeeting): ProjectMeeting {
-  return { id: raw.id, title: raw.title, createdAt: raw.created_at, projectId: raw.project_id };
+  return {
+    id: raw.id,
+    title: raw.title,
+    createdAt: raw.created_at,
+    projectId: raw.project_id,
+    durationSeconds: raw.duration_seconds,
+  };
 }
 
 export async function listProjects(): Promise<Project[]> {

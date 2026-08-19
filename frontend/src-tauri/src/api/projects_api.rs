@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Runtime};
 
 use crate::{
-    api::Meeting,
+    api::{with_durations, Meeting},
     database::{models::ProjectModel, repositories::project::ProjectsRepository},
     state::AppState,
 };
@@ -154,10 +154,10 @@ pub async fn api_get_project_meetings<R: Runtime>(
     project_id: String,
 ) -> Result<Vec<Meeting>, String> {
     let pool = state.db_manager.pool();
-    ProjectsRepository::list_meetings(pool, &project_id)
+    let models = ProjectsRepository::list_meetings(pool, &project_id)
         .await
-        .map(|models| models.into_iter().map(Meeting::from).collect())
-        .map_err(|e| format!("Failed to list project meetings: {}", e))
+        .map_err(|e| format!("Failed to list project meetings: {}", e))?;
+    Ok(with_durations(pool, models).await)
 }
 
 /// Move meetings into a project, or out of every project when `projectId` is

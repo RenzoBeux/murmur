@@ -31,6 +31,11 @@ pub struct Meeting {
     /// The project this meeting is filed under, or None when unfiled. The UI
     /// resolves the name from its own projects list rather than joining here.
     pub project_id: Option<String>,
+    /// How long the recording ran, derived from the transcript segments
+    /// (`MeetingsRepository::get_meeting_durations`). None when the meeting has
+    /// no transcripts yet or they carry no usable timings, in which case the
+    /// lists just omit it.
+    pub duration_seconds: Option<f64>,
 }
 
 impl From<MeetingModel> for Meeting {
@@ -41,6 +46,9 @@ impl From<MeetingModel> for Meeting {
             created_at: m.created_at.0.to_rfc3339(),
             updated_at: m.updated_at.0.to_rfc3339(),
             project_id: m.project_id,
+            // Filled in by the list commands, which fetch every duration in one
+            // aggregate query rather than one per meeting.
+            duration_seconds: None,
         }
     }
 }
@@ -191,6 +199,30 @@ pub struct TranscriptSegment {
 
 // API Commands for Tauri
 
+/// Convert meeting rows to the API payload, attaching each one's recording
+/// length. A failed duration lookup is not worth failing the whole list over —
+/// the meetings still render, just without the duration.
+pub(crate) async fn with_durations(
+    pool: &sqlx::SqlitePool,
+    models: Vec<MeetingModel>,
+) -> Vec<Meeting> {
+    let durations = MeetingsRepository::get_meeting_durations(pool)
+        .await
+        .unwrap_or_else(|e| {
+            log_error!("Error computing meeting durations: {}", e);
+            Default::default()
+        });
+
+    models
+        .into_iter()
+        .map(|m| {
+            let mut meeting = Meeting::from(m);
+            meeting.duration_seconds = durations.get(&meeting.id).copied();
+            meeting
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub async fn api_get_meetings<R: Runtime>(
     _app: AppHandle<R>,
@@ -209,7 +241,7 @@ pub async fn api_get_meetings<R: Runtime>(
         Ok(meeting_models) => {
             log_info!("Successfully got {} meetings", meeting_models.len());
 
-            let result: Vec<Meeting> = meeting_models.into_iter().map(Meeting::from).collect();
+            let result = with_durations(pool, meeting_models).await;
             Ok(result)
         }
         Err(e) => {

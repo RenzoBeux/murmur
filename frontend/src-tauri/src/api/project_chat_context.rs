@@ -80,6 +80,13 @@ const PROJECT_RESERVED_TOKENS: usize = 8_000;
 /// entirely.
 const SUMMARY_BUDGET_FRACTION: f64 = 0.45;
 
+/// Ceiling on the user's own project notes.
+///
+/// Hand-written, so realistically a few paragraphs; the cap exists only so a
+/// pasted document cannot silently evict the meetings the notes are *about*.
+/// Generous enough that hitting it is a surprise worth the elision marker.
+const MAX_CONTEXT_NOTES_CHARS: usize = 8_000;
+
 /// How much of the context this provider/model can be given for a whole project.
 pub(crate) async fn project_context_char_budget(
     provider: &LLMProvider,
@@ -134,6 +141,10 @@ pub struct ProjectChatContextInfo {
     pub meetings_with_transcript: usize,
     /// True when any summary or transcript had to be trimmed to fit.
     pub truncated: bool,
+    /// Whether the user's project notes were in front of the model. Recorded so
+    /// an old answer stays explicable after the notes are edited.
+    #[serde(default)]
+    pub has_project_notes: bool,
 }
 
 pub(crate) struct ProjectContext {
@@ -322,6 +333,24 @@ fn assemble(
     }
     out.push_str(&format!("Meetings in this project: {}\n\n", sources.len()));
 
+    // The user's own notes, fenced so the model can tell them apart from
+    // anything anyone actually said. Placed before the meetings because they are
+    // the glossary the transcripts should be read through.
+    if let Some(notes) = project
+        .context_notes
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+    {
+        let fitted = elide_middle(notes, MAX_CONTEXT_NOTES_CHARS);
+        if fitted.chars().count() < notes.chars().count() {
+            truncated = true;
+        }
+        out.push_str("--- PROJECT NOTES (written by the user, not from any meeting) ---\n");
+        out.push_str(&fitted);
+        out.push_str("\n--- END PROJECT NOTES ---\n\n");
+    }
+
     out.push_str("--- MEETINGS IN THIS PROJECT ---\n");
     for (i, src) in sources.iter().enumerate() {
         let availability = match detail[i] {
@@ -376,6 +405,11 @@ fn assemble(
         meetings_with_summary: summaries.iter().filter(|s| s.is_some()).count(),
         meetings_with_transcript: included_transcripts.iter().filter(|t| t.is_some()).count(),
         truncated,
+        has_project_notes: project
+            .context_notes
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|n| !n.is_empty()),
     };
 
     ProjectContext { text: out, info }
@@ -440,6 +474,23 @@ pub(crate) fn build_project_system_prompt(
          into a single position. The meetings are listed oldest first, so later meetings \
          supersede earlier ones. ",
     );
+
+    if info.has_project_notes {
+        // The notes are the user's own writing, so they are trusted as
+        // background and may name people, define codenames, or set standing
+        // preferences. What they must never become is meeting content: if a note
+        // says a decision was made, that is the user telling you so, not the
+        // Kickoff call — and answering "you decided that in Kickoff" would be a
+        // fabrication the user cannot catch, because it repeats what they wrote.
+        p.push_str(
+            "A PROJECT NOTES block below holds background the user wrote by hand. Treat it as \
+             reliable context about the project — use its names, spellings, codenames and \
+             definitions when reading the meetings, and follow any standing preference it states. \
+             It is NOT a record of anything that was said: never cite it as a meeting, never \
+             attribute it to a speaker, and when the answer rests on it rather than on the \
+             meetings, say it comes from the project notes. ",
+        );
+    }
 
     if info.meetings_with_transcript < info.meetings_total {
         p.push_str(
@@ -525,6 +576,7 @@ mod tests {
             name: "Client X".into(),
             description: Some("Rollout work".into()),
             color: None,
+            context_notes: None,
             created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
         }
@@ -618,6 +670,68 @@ mod tests {
     }
 
     #[test]
+    fn project_notes_are_fenced_and_flagged_in_the_info() {
+        let mut p = project();
+        p.context_notes = Some("Sofía is the PM. \"Titan\" is the v2 rewrite.".into());
+        let ctx = assemble(&p, &[src("Kickoff", Some("s"), 100)], 10_000);
+
+        assert!(ctx.text.contains("Titan"), "the notes reach the model");
+        assert!(ctx.text.contains("--- PROJECT NOTES"));
+        assert!(ctx.text.contains("written by the user, not from any meeting"));
+        assert!(ctx.info.has_project_notes);
+
+        // The notes sit before the meetings — they are the glossary the
+        // transcripts should be read through.
+        let notes_at = ctx.text.find("PROJECT NOTES").unwrap();
+        let meetings_at = ctx.text.find("===== MEETING 1").unwrap();
+        assert!(notes_at < meetings_at);
+    }
+
+    #[test]
+    fn absent_or_blank_notes_add_nothing() {
+        let ctx = assemble(&project(), &[src("Kickoff", Some("s"), 10)], 10_000);
+        assert!(!ctx.text.contains("PROJECT NOTES"));
+        assert!(!ctx.info.has_project_notes);
+
+        let mut blank = project();
+        blank.context_notes = Some("   \n  ".into());
+        let ctx = assemble(&blank, &[src("Kickoff", Some("s"), 10)], 10_000);
+        assert!(!ctx.text.contains("PROJECT NOTES"));
+        assert!(!ctx.info.has_project_notes);
+    }
+
+    /// Pasting a document into the notes must not evict the meetings they are
+    /// about.
+    #[test]
+    fn oversized_notes_are_elided_rather_than_starving_the_meetings() {
+        let mut p = project();
+        p.context_notes = Some("n".repeat(50_000));
+        let ctx = assemble(&p, &[src("Kickoff", Some("s"), 2_000)], 40_000);
+
+        assert!(ctx.info.truncated);
+        assert!(ctx.text.contains("omitted for length"));
+        assert_eq!(ctx.info.meetings_with_transcript, 1, "the meeting survives");
+    }
+
+    #[test]
+    fn system_prompt_states_the_notes_rule_only_when_notes_exist() {
+        let with = ProjectChatContextInfo {
+            meetings_total: 1,
+            meetings_with_summary: 1,
+            meetings_with_transcript: 1,
+            truncated: false,
+            has_project_notes: true,
+        };
+        let p = build_project_system_prompt("CTX", &with, ChatGrounding::TranscriptOnly);
+        assert!(p.contains("PROJECT NOTES block"));
+        assert!(p.contains("never cite it as a meeting"));
+
+        let without = ProjectChatContextInfo { has_project_notes: false, ..with };
+        let p = build_project_system_prompt("CTX", &without, ChatGrounding::TranscriptOnly);
+        assert!(!p.contains("PROJECT NOTES block"));
+    }
+
+    #[test]
     fn empty_project_says_so_without_erroring() {
         let ctx = assemble(&project(), &[], 10_000);
         assert_eq!(ctx.info.meetings_total, 0);
@@ -630,6 +744,7 @@ mod tests {
             meetings_with_summary: 2,
             meetings_with_transcript: 2,
             truncated: false,
+            has_project_notes: false,
         };
         let partial = ProjectChatContextInfo {
             meetings_with_transcript: 1,

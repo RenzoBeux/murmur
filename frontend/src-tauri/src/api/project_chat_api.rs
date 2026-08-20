@@ -438,6 +438,7 @@ mod tests {
             meetings_with_summary: 2,
             meetings_with_transcript: 1,
             truncated: true,
+            has_project_notes: false,
         };
         let json = build_project_answer_metadata(
             ChatGrounding::TranscriptOnly,

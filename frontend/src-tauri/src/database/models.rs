@@ -22,6 +22,10 @@ pub struct ProjectModel {
     /// Palette slug (see `PROJECT_COLORS`), or None for projects that predate
     /// the color picker — the UI derives one from the id in that case.
     pub color: Option<String>,
+    /// Free-form background the user wrote for the AI: names, codenames,
+    /// constraints the meetings never state out loud. Distinct from
+    /// `description`, which is the short label the project cards render.
+    pub context_notes: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

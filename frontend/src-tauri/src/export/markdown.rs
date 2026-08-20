@@ -525,6 +525,7 @@ mod tests {
             name: "Q3 Planning".to_string(),
             description: Some("Roadmap work".to_string()),
             color: None,
+            context_notes: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         }

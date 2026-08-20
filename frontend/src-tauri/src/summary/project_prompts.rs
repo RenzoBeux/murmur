@@ -18,9 +18,11 @@ pub(crate) const PROJECT_ATTRIBUTION_RULES: &str = r#"**SOURCE ATTRIBUTION RULES
 - If you cannot tell which meeting something came from, leave it out rather than guessing."#;
 
 /// The report the synthesis step must produce.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_synthesis_system_prompt(
     project_name: &str,
     project_description: Option<&str>,
+    project_notes: Option<&str>,
     meeting_count: usize,
     first_date: &str,
     last_date: &str,
@@ -31,6 +33,23 @@ pub(crate) fn build_synthesis_system_prompt(
         .map(str::trim)
         .filter(|d| !d.is_empty())
         .map(|d| format!("\nThe person who owns this project describes it as: {d}\n"))
+        .unwrap_or_default();
+
+    // Background the user wrote by hand. Trusted for names and definitions, but
+    // it records nothing that was said — so it must not turn into a decision or
+    // an action item attributed to a meeting.
+    let notes_block = project_notes
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(|n| {
+            format!(
+                "\n**PROJECT NOTES (written by the user, not from any meeting):**\n{n}\n\n\
+                 Use these notes for names, spellings, codenames and definitions when reading the \
+                 briefs, and follow any standing preference they state. They are NOT a meeting: \
+                 nothing in them may appear as a decision, an action item or an open question \
+                 attributed to a meeting, and they are never a citable source.\n"
+            )
+        })
         .unwrap_or_default();
 
     // Told plainly, so the model neither speculates about the gaps nor tries to
@@ -47,7 +66,7 @@ pub(crate) fn build_synthesis_system_prompt(
 
     format!(
         r#"You are an expert program manager writing a cross-meeting brief for the project "{project_name}".
-{description_block}
+{description_block}{notes_block}
 **CRITICAL INSTRUCTIONS:**
 1. **Write the brief in {language} regardless of the language of the input; prose in any other language is invalid.**
 2. You are given per-meeting briefs, oldest first. Read them as one story that develops over time, not as a list to be concatenated. Say how things CHANGED between meetings.
@@ -161,6 +180,7 @@ mod tests {
         let p = build_synthesis_system_prompt(
             "Client X",
             Some("Rollout"),
+            None,
             5,
             "2026-01-02",
             "2026-03-04",
@@ -185,14 +205,42 @@ mod tests {
 
     #[test]
     fn synthesis_prompt_tells_the_model_not_to_list_the_gaps_itself() {
-        let p = build_synthesis_system_prompt("P", None, 5, "a", "b", 3, "English");
+        let p = build_synthesis_system_prompt("P", None, None, 5, "a", "b", 3, "English");
         assert!(p.contains("3 meeting(s)"));
         assert!(p.contains("do not list them"));
     }
 
+    /// The user's notes are trusted background, but they record nothing that was
+    /// said — so the prompt has to forbid them turning into a cited decision.
+    #[test]
+    fn project_notes_are_included_but_never_citable_as_a_meeting() {
+        let p = build_synthesis_system_prompt(
+            "P",
+            None,
+            Some("Sofía is the PM. 'Titan' is the v2 rewrite."),
+            2,
+            "a",
+            "b",
+            0,
+            "English",
+        );
+        assert!(p.contains("Titan"), "the notes reach the model");
+        assert!(p.contains("not from any meeting"));
+        assert!(p.contains("never a citable source"));
+
+        let without = build_synthesis_system_prompt("P", None, None, 2, "a", "b", 0, "English");
+        assert!(!without.contains("PROJECT NOTES"));
+    }
+
+    #[test]
+    fn blank_project_notes_add_no_block() {
+        let p = build_synthesis_system_prompt("P", None, Some("   "), 2, "a", "b", 0, "English");
+        assert!(!p.contains("PROJECT NOTES"));
+    }
+
     #[test]
     fn attribution_rules_are_shared_by_both_prompts() {
-        let synthesis = build_synthesis_system_prompt("P", None, 2, "a", "b", 0, "English");
+        let synthesis = build_synthesis_system_prompt("P", None, None, 2, "a", "b", 0, "English");
         let digest = build_batch_digest_system_prompt("English");
         assert!(synthesis.contains("SOURCE ATTRIBUTION RULES"));
         assert!(digest.contains("SOURCE ATTRIBUTION RULES"));

@@ -652,6 +652,7 @@ pub fn run() {
             api::projects_api::api_get_project_meetings,
             api::projects_api::api_assign_meetings_to_project,
             api::projects_api::api_get_meeting_project,
+            api::projects_api::api_set_project_context_notes,
             api::api_add_meeting_tag,
             api::api_remove_meeting_tag,
             api::api_get_meeting_tags,

@@ -11,6 +11,7 @@ struct ProjectCountRow {
     name: String,
     description: Option<String>,
     color: Option<String>,
+    context_notes: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     meeting_count: i64,
@@ -25,6 +26,7 @@ impl ProjectCountRow {
                 name: self.name,
                 description: self.description,
                 color: self.color,
+                context_notes: self.context_notes,
                 created_at: self.created_at,
                 updated_at: self.updated_at,
             },
@@ -113,9 +115,37 @@ impl ProjectsRepository {
             name,
             description,
             color,
+            // A new project has no context yet; it is written from the Notes tab.
+            context_notes: None,
             created_at: now,
             updated_at: now,
         })
+    }
+
+    /// Replace a project's context notes — the background the user writes for
+    /// the AI. Blank stores NULL, so "no notes" has one representation.
+    ///
+    /// Deliberately not folded into `update`: that one backs the create/edit
+    /// dialog, where every field is submitted together, while this is called
+    /// repeatedly by an autosaving textarea and must not touch name or color.
+    pub async fn set_context_notes(
+        pool: &SqlitePool,
+        id: &str,
+        notes: Option<&str>,
+    ) -> Result<bool, SqlxError> {
+        let notes = notes
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(str::to_string);
+
+        let result =
+            sqlx::query("UPDATE projects SET context_notes = ?, updated_at = ? WHERE id = ?")
+                .bind(&notes)
+                .bind(Utc::now())
+                .bind(id)
+                .execute(pool)
+                .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     /// Every project with its live meeting count, name-sorted (case-insensitive).
@@ -123,7 +153,7 @@ impl ProjectsRepository {
     /// puts it back in its project.
     pub async fn list_with_counts(pool: &SqlitePool) -> Result<Vec<(ProjectModel, i64)>, SqlxError> {
         let rows = sqlx::query_as::<_, ProjectCountRow>(
-            "SELECT p.id, p.name, p.description, p.color, p.created_at, p.updated_at, \
+            "SELECT p.id, p.name, p.description, p.color, p.context_notes, p.created_at, p.updated_at, \
                     (SELECT COUNT(*) FROM meetings m \
                       WHERE m.project_id = p.id AND m.deleted_at IS NULL) AS meeting_count \
              FROM projects p ORDER BY p.name COLLATE NOCASE",
@@ -135,7 +165,7 @@ impl ProjectsRepository {
 
     pub async fn get(pool: &SqlitePool, id: &str) -> Result<Option<ProjectModel>, SqlxError> {
         sqlx::query_as::<_, ProjectModel>(
-            "SELECT id, name, description, color, created_at, updated_at FROM projects WHERE id = ?",
+            "SELECT id, name, description, color, context_notes, created_at, updated_at FROM projects WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(pool)
@@ -268,7 +298,7 @@ impl ProjectsRepository {
         meeting_id: &str,
     ) -> Result<Option<ProjectModel>, SqlxError> {
         sqlx::query_as::<_, ProjectModel>(
-            "SELECT p.id, p.name, p.description, p.color, p.created_at, p.updated_at \
+            "SELECT p.id, p.name, p.description, p.color, p.context_notes, p.created_at, p.updated_at \
              FROM projects p JOIN meetings m ON m.project_id = p.id WHERE m.id = ?",
         )
         .bind(meeting_id)

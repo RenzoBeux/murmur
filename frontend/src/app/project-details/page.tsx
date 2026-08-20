@@ -12,6 +12,7 @@ import {
   List,
   LoaderIcon,
   MessageSquare,
+  NotebookPen,
   Pencil,
   Plus,
   Timer,
@@ -28,6 +29,7 @@ import { AddMeetingsDialog } from '@/components/Projects/AddMeetingsDialog';
 import { ExportBundleDialog } from '@/components/Export/ExportBundleDialog';
 import { ProjectFormDialog } from '@/components/Projects/ProjectFormDialog';
 import { ProjectChatPanel } from '@/components/Projects/ProjectChatPanel';
+import { ProjectNotesPanel } from '@/components/Projects/ProjectNotesPanel';
 import { ProjectSummaryPanel } from '@/components/Projects/ProjectSummaryPanel';
 import { ModelPicker } from '@/components/chat/ModelPicker';
 import { useChatModelSelection } from '@/hooks/useChatModelSelection';
@@ -46,7 +48,7 @@ import {
   onProjectsChanged,
 } from '@/lib/projectsApi';
 
-type ProjectTab = 'meetings' | 'summary' | 'chat';
+type ProjectTab = 'meetings' | 'summary' | 'chat' | 'notes';
 
 function parseDate(value?: string): Date | null {
   if (!value) return null;
@@ -84,7 +86,9 @@ function ProjectDetailsContent() {
   // tab click would churn useSearchParams and re-render the whole subtree.
   const [tab, setTab] = useState<ProjectTab>(() => {
     const requested = searchParams.get('tab');
-    return requested === 'summary' || requested === 'chat' ? requested : 'meetings';
+    return requested === 'summary' || requested === 'chat' || requested === 'notes'
+      ? requested
+      : 'meetings';
   });
 
   const modelSelection = useChatModelSelection();
@@ -287,6 +291,15 @@ function ProjectDetailsContent() {
             <TabsTrigger value="chat" className="gap-1.5">
               <MessageSquare className="h-4 w-4" /> Chat
             </TabsTrigger>
+            <TabsTrigger value="notes" className="gap-1.5">
+              <NotebookPen className="h-4 w-4" /> Notes
+              {project.contextNotes && (
+                <span
+                  aria-label="This project has notes"
+                  className="h-1.5 w-1.5 rounded-full bg-brand"
+                />
+              )}
+            </TabsTrigger>
           </TabsList>
         </div>
         </div>
@@ -418,6 +431,16 @@ function ProjectDetailsContent() {
             projectId={project.id}
             meetingCount={project.meetingCount}
             context={projectSummary.summary?.meetings ?? null}
+          />
+        </TabsContent>
+
+        <TabsContent value="notes" className="mt-0 flex-1 min-h-0 overflow-hidden">
+          <ProjectNotesPanel
+            projectId={project.id}
+            notes={project.contextNotes}
+            onSaved={(contextNotes) =>
+              setProject((prev) => (prev ? { ...prev, contextNotes } : prev))
+            }
           />
         </TabsContent>
       </Tabs>

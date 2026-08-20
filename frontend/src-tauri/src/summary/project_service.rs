@@ -494,6 +494,7 @@ async fn synthesize<R: Runtime>(
     let system = build_synthesis_system_prompt(
         &project.name,
         project.description.as_deref(),
+        project.context_notes.as_deref(),
         covered.len(),
         &first_date,
         &last_date,

@@ -1,0 +1,23 @@
+-- Free-form notes the user writes about a project, read by the project chat and
+-- the project brief on every answer.
+--
+-- Separate from `projects.description` rather than an extension of it, because
+-- the two have different jobs and different sizes: `description` is an identity
+-- label rendered on the project cards (line-clamped to two lines) and in the
+-- page header, while this is long-form background — a glossary of names and
+-- codenames, who the client is, constraints the meetings never state out loud.
+-- Folding them together would mean a page of context wrecking the card layout,
+-- or a short label being the only place to put it.
+--
+-- Plain text, not markdown/JSON: it is written in a textarea and injected into
+-- a prompt verbatim, so there is no renderer to feed and no second format to
+-- migrate later.
+--
+-- ADD COLUMN is safe here — unlike the chat tables, `projects` has no FTS5
+-- triggers keyed to its rowids. It is still the right instinct: a rebuild would
+-- be gratuitous.
+ALTER TABLE projects ADD COLUMN context_notes TEXT;
+
+-- Not indexed in search_index. The index's rows are keyed by meeting_id and
+-- every consumer INNER JOINs `meetings`, so a project-scoped row would be
+-- invisible to search anyway — the same reasoning as 20260819140000.

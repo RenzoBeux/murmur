@@ -12,148 +12,13 @@ use crate::state::AppState;
 use crate::summary::llm_client::{generate_answer, LLMProvider, LlmAnswer, LlmExtras};
 use crate::summary::web_search::{self, WebSource};
 
-/// Transcript budget when the model's context size is unknown (LM Studio, or a
-/// failed Ollama metadata fetch). ~8k tokens — safe for most local models.
-const DEFAULT_MAX_TRANSCRIPT_CHARS: usize = 30_000;
-const MAX_HISTORY_MESSAGES: usize = 20;
+// Shared with the live Ask-AI chat and the project chat; see api/chat_common.rs.
+pub use crate::api::chat_common::{ChatAnswerMetadata, ChatGrounding, GroundingOutcome, WebSearchSupportInfo};
+use crate::api::chat_common::{
+    build_answer_metadata, build_transcript_text, build_user_prompt, resolve_grounding,
+    resolve_llm_config, transcript_char_budget, SPEAKER_LABEL_RULES,
+};
 
-/// Rough chars-per-token used to convert a context size into a char budget.
-const CHARS_PER_TOKEN: usize = 4;
-/// Tokens reserved out of the context for the system-prompt boilerplate, chat
-/// history, attachments block, and the model's answer.
-const RESERVED_TOKENS: usize = 2_000;
-
-/// How many transcript characters this provider/model can take. Mirrors the
-/// summary path's sizing: cloud providers get everything, Ollama sizes to the
-/// model's real context (the same metadata cache the summarizer uses), the
-/// built-in sidecar sizes to its registry entry, and LM Studio (which doesn't
-/// advertise context size) keeps the conservative default.
-async fn transcript_char_budget(
-    provider: &LLMProvider,
-    model: &str,
-    ollama_endpoint: Option<&str>,
-) -> usize {
-    match provider {
-        LLMProvider::OpenAI
-        | LLMProvider::Claude
-        | LLMProvider::Groq
-        | LLMProvider::OpenRouter
-        | LLMProvider::CustomOpenAI
-        | LLMProvider::ChatGptSubscription => usize::MAX,
-        LLMProvider::Ollama => {
-            match crate::ollama::metadata::METADATA_CACHE
-                .get_or_fetch(model, ollama_endpoint)
-                .await
-            {
-                Ok(meta) => {
-                    meta.context_size.saturating_sub(RESERVED_TOKENS).max(1_000) * CHARS_PER_TOKEN
-                }
-                Err(e) => {
-                    log_info!(
-                        "No context metadata for {} ({}); using default transcript budget",
-                        model,
-                        e
-                    );
-                    DEFAULT_MAX_TRANSCRIPT_CHARS
-                }
-            }
-        }
-        LLMProvider::BuiltInAI => crate::summary::summary_engine::models::get_model_by_name(model)
-            .map(|m| {
-                (m.context_size as usize)
-                    .saturating_sub(RESERVED_TOKENS)
-                    .max(1_000)
-                    * CHARS_PER_TOKEN
-            })
-            .unwrap_or(DEFAULT_MAX_TRANSCRIPT_CHARS),
-        LLMProvider::LMStudio => DEFAULT_MAX_TRANSCRIPT_CHARS,
-    }
-}
-
-/// How far past the meeting the assistant may reach when answering.
-///
-/// The transcript is the primary source under every mode; they differ only in
-/// what happens when the answer is not in it. Stored per chat thread, so a
-/// strict recap conversation and a research conversation can coexist in one
-/// meeting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChatGrounding {
-    /// Transcript and attachments only — the behavior before grounding modes
-    /// existed, and still the default.
-    #[default]
-    TranscriptOnly,
-    /// May also answer from the model's own knowledge. Makes no extra network
-    /// calls: the request goes to the same provider it always did.
-    GeneralKnowledge,
-    /// May also run the provider's own server-side web search.
-    WebSearch,
-}
-
-impl ChatGrounding {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::TranscriptOnly => "transcript_only",
-            Self::GeneralKnowledge => "general_knowledge",
-            Self::WebSearch => "web_search",
-        }
-    }
-
-    /// Parse a stored or frontend-supplied mode. An unrecognized value falls
-    /// back to the strictest mode rather than failing the chat turn — a bad
-    /// value must never widen what the assistant is allowed to do.
-    pub fn parse(value: &str) -> Self {
-        match value.trim() {
-            "general_knowledge" => Self::GeneralKnowledge,
-            "web_search" => Self::WebSearch,
-            "transcript_only" => Self::TranscriptOnly,
-            other => {
-                if !other.is_empty() {
-                    log_error!("Unknown chat grounding mode {:?}; using transcript_only", other);
-                }
-                Self::TranscriptOnly
-            }
-        }
-    }
-}
-
-/// What actually happened on one answer, recorded so the UI can label it and so
-/// a degradation is visible instead of silent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GroundingOutcome {
-    /// The mode the thread asked for.
-    pub requested: ChatGrounding,
-    /// The mode that ran. Lower than `requested` when the provider can't search.
-    pub effective: ChatGrounding,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub degraded_reason: Option<String>,
-}
-
-/// Persisted as JSON in `chat_messages.metadata` on assistant messages.
-///
-/// Only written when there is something to say — a plain transcript-only answer
-/// stores nothing, exactly as before this feature existed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatAnswerMetadata {
-    pub grounding: GroundingOutcome,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sources: Vec<WebSource>,
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub search_count: u32,
-}
-
-fn is_zero(n: &u32) -> bool {
-    *n == 0
-}
-
-/// Whether this provider/model can search, reported to the picker so the web
-/// option can be disabled with a reason instead of silently doing nothing.
-#[derive(Debug, Serialize)]
-pub struct WebSearchSupportInfo {
-    pub supported: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -212,122 +77,6 @@ impl From<crate::database::models::ChatThreadModel> for ChatThread {
     }
 }
 
-/// Provider configuration resolved from settings, ready to hand to
-/// `generate_summary`. Shared by the saved-meeting and live chat paths.
-struct ResolvedLlmConfig {
-    provider_enum: LLMProvider,
-    /// Final key: the provider's API key, or the custom-OpenAI key when that
-    /// provider is selected, or empty for keyless providers.
-    api_key: String,
-    ollama_endpoint: Option<String>,
-    lmstudio_endpoint: Option<String>,
-    custom_openai_endpoint: Option<String>,
-    custom_openai_max_tokens: Option<u32>,
-    custom_openai_temperature: Option<f32>,
-    custom_openai_top_p: Option<f32>,
-    app_data_dir: Option<std::path::PathBuf>,
-}
-
-async fn resolve_llm_config<R: Runtime>(
-    app: &AppHandle<R>,
-    pool: &sqlx::SqlitePool,
-    provider: &str,
-) -> Result<ResolvedLlmConfig, String> {
-    let provider_enum = LLMProvider::from_str(provider)?;
-
-    let api_key: String = match &provider_enum {
-        LLMProvider::Ollama
-        | LLMProvider::BuiltInAI
-        | LLMProvider::CustomOpenAI
-        | LLMProvider::LMStudio
-        | LLMProvider::ChatGptSubscription => String::new(),
-        LLMProvider::OpenAI | LLMProvider::Claude | LLMProvider::Groq | LLMProvider::OpenRouter => {
-            match SettingsRepository::get_api_key(pool, provider).await {
-                Ok(Some(key)) if !key.is_empty() => key,
-                _ => {
-                    return Err(format!(
-                        "API key not configured for {}. Add one in Settings.",
-                        provider
-                    ))
-                }
-            }
-        }
-    };
-
-    let ollama_endpoint = if matches!(provider_enum, LLMProvider::Ollama) {
-        SettingsRepository::get_model_config(pool)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|c| c.ollama_endpoint)
-    } else {
-        None
-    };
-
-    let lmstudio_endpoint = if matches!(provider_enum, LLMProvider::LMStudio) {
-        SettingsRepository::get_model_config(pool)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|c| c.lm_studio_endpoint)
-    } else {
-        None
-    };
-
-    let (
-        custom_openai_endpoint,
-        custom_openai_api_key,
-        custom_openai_max_tokens,
-        custom_openai_temperature,
-        custom_openai_top_p,
-    ) = if matches!(provider_enum, LLMProvider::CustomOpenAI) {
-        match SettingsRepository::get_custom_openai_config(pool).await {
-            Ok(Some(cfg)) => (
-                Some(cfg.endpoint),
-                cfg.api_key,
-                cfg.max_tokens.map(|t| t as u32),
-                cfg.temperature,
-                cfg.top_p,
-            ),
-            _ => return Err("Custom OpenAI provider selected but no configuration found".to_string()),
-        }
-    } else {
-        (None, None, None, None, None)
-    };
-
-    let final_api_key = if matches!(provider_enum, LLMProvider::CustomOpenAI) {
-        custom_openai_api_key.unwrap_or_default()
-    } else {
-        api_key
-    };
-
-    // BuiltInAI needs it for the sidecar; ChatGptSubscription needs it to locate
-    // the stored OAuth tokens.
-    let app_data_dir = if matches!(
-        provider_enum,
-        LLMProvider::BuiltInAI | LLMProvider::ChatGptSubscription
-    ) {
-        Some(
-            app.path()
-                .app_data_dir()
-                .map_err(|e| format!("Failed to resolve app data dir: {}", e))?,
-        )
-    } else {
-        None
-    };
-
-    Ok(ResolvedLlmConfig {
-        provider_enum,
-        api_key: final_api_key,
-        ollama_endpoint,
-        lmstudio_endpoint,
-        custom_openai_endpoint,
-        custom_openai_max_tokens,
-        custom_openai_temperature,
-        custom_openai_top_p,
-        app_data_dir,
-    })
-}
 
 /// Verify a thread exists and belongs to the given meeting.
 async fn require_thread(
@@ -348,56 +97,6 @@ async fn require_thread(
     Ok(thread)
 }
 
-/// Decide what grounding actually runs.
-///
-/// A thread set to web search on a provider that can't search falls back to
-/// general knowledge rather than pretending — the reason travels with the answer
-/// so the UI can explain it instead of the user wondering why no sources showed
-/// up. Only web search can degrade; the other two modes need nothing from the
-/// provider.
-fn resolve_grounding(
-    requested: ChatGrounding,
-    provider: &LLMProvider,
-    model: &str,
-) -> (ChatGrounding, Option<String>) {
-    if requested != ChatGrounding::WebSearch {
-        return (requested, None);
-    }
-    match web_search::web_search_support(provider, model) {
-        web_search::WebSearchSupport::Native => (ChatGrounding::WebSearch, None),
-        web_search::WebSearchSupport::Unsupported(reason) => {
-            log_info!("Web search unavailable for {:?}/{}: {}", provider, model, reason);
-            (ChatGrounding::GeneralKnowledge, Some(reason.to_string()))
-        }
-    }
-}
-
-/// Serialize what happened, for `chat_messages.metadata`.
-///
-/// Returns None for a plain transcript-only answer: those store nothing, so
-/// existing conversations keep exactly the rows they had before grounding modes.
-fn build_answer_metadata(
-    requested: ChatGrounding,
-    effective: ChatGrounding,
-    degraded_reason: Option<String>,
-    answer: &LlmAnswer,
-) -> Option<String> {
-    if requested == ChatGrounding::TranscriptOnly {
-        return None;
-    }
-    let metadata = ChatAnswerMetadata {
-        grounding: GroundingOutcome {
-            requested,
-            effective,
-            degraded_reason,
-        },
-        sources: answer.sources.clone(),
-        search_count: answer.search_count,
-    };
-    serde_json::to_string(&metadata)
-        .map_err(|e| log_error!("Failed to serialize chat metadata: {}", e))
-        .ok()
-}
 
 #[tauri::command]
 pub async fn api_send_chat_message<R: Runtime>(
@@ -957,57 +656,6 @@ pub async fn api_clear_live_chat_history() -> Result<(), String> {
     Ok(())
 }
 
-/// Map a stored speaker tag to the same display name the UI renders, so the
-/// LLM sees consistent labels. Mirrors `speakerDisplayName` in the frontend
-/// `lib/speakerLabel.ts`.
-fn speaker_display_name(tag: &str) -> &str {
-    match tag {
-        "mic" => "You",
-        "system" => "Others",
-        other => other,
-    }
-}
-
-/// Join `(speaker, text)` transcript lines into the prompt's transcript block,
-/// budget-truncating to head + tail when over `max_chars`. Both the saved
-/// meeting's `MeetingTranscript` rows and the live recording's segments map
-/// into the same line shape.
-fn build_transcript_text<'a, I>(lines: I, max_chars: usize) -> String
-where
-    I: IntoIterator<Item = (Option<&'a str>, &'a str)>,
-{
-    let mut joined = lines
-        .into_iter()
-        .filter(|(_, text)| !text.is_empty())
-        .map(|(speaker, text)| {
-            // Prefix each line with the speaker (when set) so the LLM can
-            // attribute statements. Falls back to plain text for old
-            // transcripts that pre-date diarization.
-            match speaker.filter(|s| !s.is_empty()) {
-                Some(tag) => format!("{}: {}", speaker_display_name(tag), text),
-                None => text.to_string(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    if max_chars != usize::MAX && joined.chars().count() > max_chars {
-        // Keep the meeting's opening AND its conclusion/action-items instead of only the
-        // head (the old head-only cut hid the end of every long meeting, so
-        // "what did we decide at the end?" always failed). Char-boundary safe.
-        let chars: Vec<char> = joined.chars().collect();
-        let total = chars.len();
-        let head_len = (max_chars * 3) / 5; // 60% opening
-        let tail_len = max_chars - head_len; // 40% conclusion
-        let head: String = chars[..head_len].iter().collect();
-        let tail: String = chars[total - tail_len..].iter().collect();
-        let omitted = total - head_len - tail_len;
-        joined = format!(
-            "{head}\n\n[... {omitted} characters from the middle of the transcript omitted for length ...]\n\n{tail}"
-        );
-    }
-    joined
-}
 
 fn build_system_prompt(
     meeting_title: &str,
@@ -1078,17 +726,7 @@ fn build_system_prompt(
              never attribute it to a speaker. ",
         ),
     }
-    prompt.push_str(
-        "Each transcript line that has a known speaker is prefixed `Speaker: text` — the \
-         label before the colon is the ONLY reliable indicator of who is speaking. \
-         \"You\" is the local microphone, \"Others\" is everyone else on the call, and \
-         other labels (e.g. speaker_1) come from speaker diarization. \
-         A name mentioned inside the spoken text is someone being talked to or about — \
-         NOT necessarily the speaker; never attribute a statement to a person merely \
-         because their name was mentioned. If you cannot tell who said something from \
-         the speaker labels, say so instead of guessing. \
-         Keep answers concise and reference specific speakers or moments when relevant.\n\n",
-    );
+    prompt.push_str(SPEAKER_LABEL_RULES);
     if let Some(roster) = attendees.map(str::trim).filter(|a| !a.is_empty()) {
         prompt.push_str(&format!(
             "Attendees (canonical names, provided by the user):\n{roster}\n\
@@ -1114,25 +752,6 @@ fn build_system_prompt(
     prompt
 }
 
-fn build_user_prompt(history: &[(&str, &str)], current_message: &str) -> String {
-    let recent: &[(&str, &str)] = if history.len() > MAX_HISTORY_MESSAGES {
-        &history[history.len() - MAX_HISTORY_MESSAGES..]
-    } else {
-        history
-    };
-    let mut out = String::new();
-    out.push_str("Conversation so far:\n");
-    if recent.is_empty() {
-        out.push_str("(no prior messages)\n");
-    } else {
-        for (role, content) in recent {
-            let role = if *role == "user" { "User" } else { "Assistant" };
-            out.push_str(&format!("{}: {}\n", role, content));
-        }
-    }
-    out.push_str(&format!("User: {}\nAssistant:", current_message));
-    out
-}
 
 #[cfg(test)]
 mod tests {

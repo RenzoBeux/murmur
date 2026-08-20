@@ -70,6 +70,39 @@ impl SummaryProcessesRepository {
         Ok(true)
     }
 
+    /// The raw `result` blob for several meetings, in one query per batch.
+    ///
+    /// For building project-level context, where fetching per meeting would mean
+    /// N round trips on every chat turn. Meetings with no summary row are simply
+    /// absent from the map — callers must treat "missing" as "no summary yet",
+    /// not as an error.
+    ///
+    /// Note this deliberately does NOT use `get_summary_data_for_meeting`'s
+    /// shape: that one INNER JOINs `transcript_chunks`, so a meeting whose
+    /// summary exists without a chunk row would silently vanish here.
+    pub async fn get_results_for_meetings(
+        pool: &SqlitePool,
+        meeting_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, String>, sqlx::Error> {
+        const BIND_CHUNK: usize = 500;
+        let mut out = std::collections::HashMap::new();
+        for chunk in meeting_ids.chunks(BIND_CHUNK) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT meeting_id, result FROM summary_processes \
+                 WHERE meeting_id IN ({placeholders}) AND result IS NOT NULL AND result <> ''"
+            );
+            let mut q = sqlx::query_as::<_, (String, String)>(&sql);
+            for id in chunk {
+                q = q.bind(id);
+            }
+            for (id, result) in q.fetch_all(pool).await? {
+                out.insert(id, result);
+            }
+        }
+        Ok(out)
+    }
+
     pub async fn get_summary_data_for_meeting(
         pool: &SqlitePool,
         meeting_id: &str,

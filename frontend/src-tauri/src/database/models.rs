@@ -191,3 +191,65 @@ pub struct TranscriptSetting {
     #[serde(rename = "openaiApiKey")]
     pub openai_api_key: Option<String>,
 }
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct ProjectChatThreadModel {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    /// Always 'post' -- a recording belongs to a meeting, never to a project.
+    /// The field exists so this row shape matches `ChatThreadModel`.
+    pub origin: String,
+    /// How far past the project's meetings this conversation may reach:
+    /// 'transcript_only' | 'general_knowledge' | 'web_search'.
+    pub grounding_mode: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct ProjectChatMessageModel {
+    pub id: String,
+    pub project_id: String,
+    /// NOT NULL in the schema, unlike `ChatMessageModel::thread_id` -- that one
+    /// is optional only because it arrived by ALTER TABLE.
+    pub thread_id: String,
+    pub role: String,
+    pub content: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// JSON describing where an assistant answer came from, what it cited, and
+    /// which meetings were actually in context (see `ChatAnswerMetadata` in
+    /// api/chat_common.rs). None on user messages.
+    pub metadata: Option<String>,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct ProjectSummaryModel {
+    pub project_id: String,
+    /// 'PENDING' | 'completed' | 'failed' | 'cancelled'. The absence of a row is
+    /// what the UI shows as "idle"; that value is never stored.
+    pub status: String,
+    /// JSON, same envelope as `SummaryProcess::result`: {"markdown": "..."}.
+    pub result: Option<String>,
+    pub error: Option<String>,
+    /// The previous good brief, parked here for the duration of a run and
+    /// restored on failure, cancellation, or an interrupted restart.
+    pub result_backup: Option<String>,
+    /// JSON array of {id,title,createdAt,source,fingerprint} describing what the
+    /// STORED result covers -- a snapshot, not the project's current membership.
+    pub covered_meetings: Option<String>,
+    /// Fingerprint over `covered_meetings`, so "has anything changed at all" is
+    /// one string compare.
+    pub coverage_fingerprint: Option<String>,
+    /// 'collecting' | 'mapping' | 'reducing' | 'synthesizing'.
+    pub stage: Option<String>,
+    pub stage_current: i64,
+    pub stage_total: i64,
+    pub output_language: Option<String>,
+    pub model_provider: Option<String>,
+    pub model_name: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub start_time: Option<chrono::DateTime<chrono::Utc>>,
+    pub end_time: Option<chrono::DateTime<chrono::Utc>>,
+    pub processing_time: f64,
+}

@@ -62,6 +62,9 @@ pub async fn initialize_database_on_startup(app: &AppHandle) -> Result<(), Strin
         if let Err(e) = crate::database::repositories::summary::SummaryProcessesRepository::reset_orphaned_processes(db_manager.pool()).await {
             log::warn!("Failed to reset orphaned summary processes: {}", e);
         }
+        if let Err(e) = crate::database::repositories::project_summary::ProjectSummariesRepository::reset_orphaned(db_manager.pool()).await {
+            log::warn!("Failed to reset orphaned project briefs: {}", e);
+        }
 
         // Empty the trash: permanently purge meetings soft-deleted more than 30 days
         // ago (cascading to their children). Best-effort — never blocks startup.

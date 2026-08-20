@@ -45,7 +45,7 @@ fn strip_leading_title(markdown: &str) -> String {
 /// No-op on already-stripped values, values starting with `## Subheading`, or values
 /// without any heading. Avoids the silent-empty-return case where `strip_leading_title`
 /// returns "" for input lacking a leading `#`.
-fn strip_title_if_present(markdown: &str) -> String {
+pub(crate) fn strip_title_if_present(markdown: &str) -> String {
     if markdown.trim_start().starts_with("# ") {
         strip_leading_title(markdown)
     } else {
@@ -203,7 +203,7 @@ pub struct SummaryService;
 
 impl SummaryService {
     /// Registers a new cancellation token for a meeting
-    fn register_cancellation_token(meeting_id: &str) -> CancellationToken {
+    pub(crate) fn register_cancellation_token(meeting_id: &str) -> CancellationToken {
         let token = CancellationToken::new();
         if let Ok(mut registry) = CANCELLATION_REGISTRY.lock() {
             registry.insert(meeting_id.to_string(), token.clone());
@@ -226,7 +226,7 @@ impl SummaryService {
     }
 
     /// Cleans up the cancellation token after processing completes
-    fn cleanup_cancellation_token(meeting_id: &str) {
+    pub(crate) fn cleanup_cancellation_token(meeting_id: &str) {
         if let Ok(mut registry) = CANCELLATION_REGISTRY.lock() {
             if registry.remove(meeting_id).is_some() {
                 info!("Cleaned up cancellation token for meeting: {}", meeting_id);

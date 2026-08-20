@@ -30,31 +30,61 @@ interface GroundingOption {
   icon: typeof Lock;
 }
 
-// Ordered from strictest to broadest, which is also the order they appear in
-// the menu — the default is first.
-const GROUNDING_OPTIONS: GroundingOption[] = [
-  {
-    value: 'transcript_only',
-    label: 'Transcript only',
-    hint: 'Answers strictly from this meeting. Says so when it cannot find something.',
-    icon: Lock,
-  },
-  {
-    value: 'general_knowledge',
-    label: '+ General knowledge',
-    hint: 'Can also explain things the meeting never covered. Stays offline.',
-    icon: Lightbulb,
-  },
-  {
-    value: 'web_search',
-    label: '+ Web search',
-    hint: 'Can also search the web and cite sources when the meeting falls short.',
-    icon: Globe,
-  },
-];
+/** What the strict mode is grounded in, which differs by chat scope. */
+export type GroundingScope = 'meeting' | 'project';
 
-export function groundingOption(value: ChatGrounding): GroundingOption {
-  return GROUNDING_OPTIONS.find((o) => o.value === value) ?? GROUNDING_OPTIONS[0];
+// Ordered from strictest to broadest, which is also the order they appear in
+// the menu — the default is first. The copy names the actual source material:
+// "this meeting" is wrong, and quietly misleading, on a project chat.
+const GROUNDING_OPTIONS: Record<GroundingScope, GroundingOption[]> = {
+  meeting: [
+    {
+      value: 'transcript_only',
+      label: 'Transcript only',
+      hint: 'Answers strictly from this meeting. Says so when it cannot find something.',
+      icon: Lock,
+    },
+    {
+      value: 'general_knowledge',
+      label: '+ General knowledge',
+      hint: 'Can also explain things the meeting never covered. Stays offline.',
+      icon: Lightbulb,
+    },
+    {
+      value: 'web_search',
+      label: '+ Web search',
+      hint: 'Can also search the web and cite sources when the meeting falls short.',
+      icon: Globe,
+    },
+  ],
+  project: [
+    {
+      value: 'transcript_only',
+      label: 'These meetings only',
+      hint: "Answers strictly from this project's meetings. Says so when it cannot find something.",
+      icon: Lock,
+    },
+    {
+      value: 'general_knowledge',
+      label: '+ General knowledge',
+      hint: 'Can also explain things the meetings never covered. Stays offline.',
+      icon: Lightbulb,
+    },
+    {
+      value: 'web_search',
+      label: '+ Web search',
+      hint: 'Can also search the web and cite sources when the meetings fall short.',
+      icon: Globe,
+    },
+  ],
+};
+
+export function groundingOption(
+  value: ChatGrounding,
+  scope: GroundingScope = 'meeting'
+): GroundingOption {
+  const options = GROUNDING_OPTIONS[scope];
+  return options.find((o) => o.value === value) ?? options[0];
 }
 
 interface GroundingPickerProps {
@@ -63,6 +93,8 @@ interface GroundingPickerProps {
   provider: string;
   model: string;
   disabled?: boolean;
+  /** Selects the wording for the strict mode. Defaults to the meeting chat. */
+  scope?: GroundingScope;
 }
 
 /**
@@ -80,6 +112,7 @@ export function GroundingPicker({
   provider,
   model,
   disabled,
+  scope = 'meeting',
 }: GroundingPickerProps) {
   const [webSupport, setWebSupport] = useState<WebSearchSupportInfo | null>(null);
 
@@ -110,7 +143,7 @@ export function GroundingPicker({
     [webSupport]
   );
 
-  const active = groundingOption(value);
+  const active = groundingOption(value, scope);
   const ActiveIcon = active.icon;
   // A thread can already be in web mode when the user switches to a model that
   // cannot search. Say so on the trigger rather than letting it look active.
@@ -140,7 +173,7 @@ export function GroundingPicker({
           How far can the AI look?
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
-        {GROUNDING_OPTIONS.map((option) => {
+        {GROUNDING_OPTIONS[scope].map((option) => {
           const Icon = option.icon;
           const unavailable = isUnavailable(option.value);
           return (

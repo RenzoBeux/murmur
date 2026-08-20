@@ -7,8 +7,11 @@ import {
   Calendar,
   Clock,
   Download,
+  FileText,
   FolderKanban,
+  List,
   LoaderIcon,
+  MessageSquare,
   Pencil,
   Plus,
   Timer,
@@ -18,11 +21,17 @@ import {
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ConfirmationModal } from '@/components/ConfirmationModal/confirmation-modal';
 import { MeetingActionsMenu } from '@/components/MeetingActions/MeetingActionsMenu';
 import { AddMeetingsDialog } from '@/components/Projects/AddMeetingsDialog';
 import { ExportBundleDialog } from '@/components/Export/ExportBundleDialog';
 import { ProjectFormDialog } from '@/components/Projects/ProjectFormDialog';
+import { ProjectChatPanel } from '@/components/Projects/ProjectChatPanel';
+import { ProjectSummaryPanel } from '@/components/Projects/ProjectSummaryPanel';
+import { ModelPicker } from '@/components/chat/ModelPicker';
+import { useChatModelSelection } from '@/hooks/useChatModelSelection';
+import { useProjectSummary } from '@/hooks/projects/useProjectSummary';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { formatMeetingDuration } from '@/lib/meetingDuration';
 import { projectClasses } from '@/lib/projectColors';
@@ -36,6 +45,8 @@ import {
   notifyProjectsChanged,
   onProjectsChanged,
 } from '@/lib/projectsApi';
+
+type ProjectTab = 'meetings' | 'summary' | 'chat';
 
 function parseDate(value?: string): Date | null {
   if (!value) return null;
@@ -69,6 +80,33 @@ function ProjectDetailsContent() {
   const [isExporting, setIsExporting] = useState(false);
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
 
+  // Deep-linkable, but not written back to the URL: a router.replace on every
+  // tab click would churn useSearchParams and re-render the whole subtree.
+  const [tab, setTab] = useState<ProjectTab>(() => {
+    const requested = searchParams.get('tab');
+    return requested === 'summary' || requested === 'chat' ? requested : 'meetings';
+  });
+
+  const modelSelection = useChatModelSelection();
+
+  // Hoisted above <Tabs> deliberately: Radix unmounts the inactive TabsContent,
+  // so a poller owned by the Summary panel would be torn down the moment the
+  // user glanced at Chat, and a running generation would go unnoticed.
+  const projectSummary = useProjectSummary({
+    projectId: projectId ?? '',
+    provider: modelSelection.provider,
+    model: modelSelection.model,
+  });
+
+  /**
+   * Reload the project and its meetings.
+   *
+   * Deliberately never sets `project` or `meetings` back to null, and never
+   * gates on an `isRefreshing` flag: `onProjectsChanged` fires on any project
+   * mutation anywhere in the app, and the loader below is a full-screen early
+   * return. Blanking here would unmount the tabs, an in-flight chat send, and
+   * any open dialog every time someone renamed a project in another window.
+   */
   const load = useCallback(async () => {
     if (!projectId) {
       setError('No project selected');
@@ -156,8 +194,16 @@ function ProjectDetailsContent() {
 
   return (
     <div className="h-[calc(100vh-var(--titlebar-height))] bg-background flex flex-col">
-      <div className="sticky top-0 z-10 bg-background/80 backdrop-blur border-b border-border">
-        <div className="max-w-4xl mx-auto px-4 md:px-8 py-6">
+      <Tabs
+        value={tab}
+        onValueChange={(v) => setTab(v as ProjectTab)}
+        className="flex flex-1 min-h-0 flex-col"
+      >
+        {/* `shrink-0` rather than `sticky`: the page is no longer one scroll
+            region, because the chat has to pin its composer to the bottom of a
+            box that does not scroll. Each tab owns its own scrolling. */}
+        <div className="shrink-0 bg-background/80 backdrop-blur border-b border-border">
+        <div className="max-w-4xl mx-auto px-4 md:px-8 pt-6">
           <button
             onClick={() => router.push('/projects')}
             className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
@@ -213,10 +259,39 @@ function ProjectDetailsContent() {
               </Button>
             </div>
           </div>
-        </div>
-      </div>
 
-      <div className="flex-1 overflow-y-auto">
+          <TabsList className="mt-4 mb-3">
+            <TabsTrigger value="meetings" className="gap-1.5">
+              <List className="h-4 w-4" /> Meetings
+              {project.meetingCount > 0 && (
+                <span className="rounded-full bg-muted px-1.5 text-xs text-muted-foreground">
+                  {project.meetingCount}
+                </span>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="summary" className="gap-1.5">
+              <FileText className="h-4 w-4" /> Summary
+              {projectSummary.isGenerating ? (
+                <LoaderIcon className="h-3 w-3 animate-spin" />
+              ) : (
+                projectSummary.summary?.coverage?.isStale && (
+                  // Pulls the user back at exactly the moment the brief became
+                  // wrong — right after they added or changed a meeting.
+                  <span
+                    aria-label="Brief is out of date"
+                    className="h-1.5 w-1.5 rounded-full bg-amber-500"
+                  />
+                )
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="chat" className="gap-1.5">
+              <MessageSquare className="h-4 w-4" /> Chat
+            </TabsTrigger>
+          </TabsList>
+        </div>
+        </div>
+
+        <TabsContent value="meetings" className="mt-0 flex-1 min-h-0 overflow-y-auto">
         <div className="max-w-4xl mx-auto p-4 md:p-8">
           {meetings === null ? (
             <div className="text-muted-foreground">Loading…</div>
@@ -311,8 +386,44 @@ function ProjectDetailsContent() {
             </ul>
           )}
         </div>
-      </div>
+        </TabsContent>
 
+        <TabsContent value="summary" className="mt-0 flex-1 min-h-0 overflow-hidden">
+          <ProjectSummaryPanel
+            meetingCount={project.meetingCount}
+            summary={projectSummary.summary}
+            isLoading={projectSummary.isLoading}
+            isGenerating={projectSummary.isGenerating}
+            onGenerate={projectSummary.generate}
+            onCancel={projectSummary.cancel}
+            onAddMeetings={() => setIsAdding(true)}
+            hasModel={Boolean(modelSelection.model)}
+            modelPicker={
+              <ModelPicker
+                provider={modelSelection.provider}
+                model={modelSelection.model}
+                ollamaModels={modelSelection.ollamaModelNames}
+                modelOptions={modelSelection.modelOptions}
+                providerApiKeys={modelSelection.providerApiKeys}
+                chatgptSignedIn={modelSelection.chatgptSignedIn}
+                onOpen={modelSelection.onPickerOpen}
+                onPick={modelSelection.handlePickModel}
+              />
+            }
+          />
+        </TabsContent>
+
+        <TabsContent value="chat" className="mt-0 flex-1 min-h-0 overflow-hidden">
+          <ProjectChatPanel
+            projectId={project.id}
+            meetingCount={project.meetingCount}
+            context={projectSummary.summary?.meetings ?? null}
+          />
+        </TabsContent>
+      </Tabs>
+
+      {/* Dialogs live OUTSIDE <Tabs>: inside a TabsContent, switching tabs would
+          unmount an open dialog, the same failure mode as a full-screen loader. */}
       <ProjectFormDialog
         open={isEditing}
         onOpenChange={setIsEditing}

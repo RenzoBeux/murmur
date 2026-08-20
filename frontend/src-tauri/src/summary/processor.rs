@@ -241,11 +241,11 @@ fn build_final_report_system_prompt(
     ])
 }
 
-/// Rough token count estimation using character count
-pub fn rough_token_count(s: &str) -> usize {
-    let char_count = s.chars().count();
-    (char_count as f64 * 0.35).ceil() as usize
-}
+/// Rough token count estimation using character count.
+///
+/// Re-exported from `summary::text_budget`, which owns the single
+/// tokens-per-character constant shared by the summary and chat paths.
+pub use crate::summary::text_budget::rough_token_count;
 
 /// Chunks text into overlapping segments based on token count
 /// Uses character-based chunking for proper Unicode support
@@ -267,11 +267,10 @@ pub fn chunk_text(text: &str, chunk_size_tokens: usize, overlap_tokens: usize) -
         return vec![];
     }
 
-    // Convert token-based sizes to character-based sizes
-    // Using ~2.85 chars per token (inverse of 0.35 tokens per char from rough_token_count)
-    let chars_per_token = 1.0 / 0.35;
-    let chunk_size_chars = (chunk_size_tokens as f64 * chars_per_token).ceil() as usize;
-    let overlap_chars = (overlap_tokens as f64 * chars_per_token).ceil() as usize;
+    // Convert token-based sizes to character-based sizes, through the same
+    // constant rough_token_count uses, so the two can never drift apart.
+    let chunk_size_chars = crate::summary::text_budget::chars_for_tokens(chunk_size_tokens);
+    let overlap_chars = crate::summary::text_budget::chars_for_tokens(overlap_tokens);
 
     // Collect characters for indexing (needed for proper Unicode support)
     let chars: Vec<char> = text.chars().collect();
@@ -757,7 +756,7 @@ pub async fn generate_meeting_summary(
 /// Wraps `generate_summary` with a small bounded retry so a transient provider error on
 /// one chunk doesn't silently drop ~20 min of the meeting. Cancellation short-circuits.
 #[allow(clippy::too_many_arguments)]
-async fn generate_summary_with_retry(
+pub(crate) async fn generate_summary_with_retry(
     client: &Client,
     provider: &LLMProvider,
     model_name: &str,

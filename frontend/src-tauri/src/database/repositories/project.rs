@@ -201,9 +201,26 @@ impl ProjectsRepository {
     /// Delete a project. Its meetings are unfiled (project_id -> NULL), never
     /// deleted. The UPDATE is explicit rather than relying on the FK's
     /// ON DELETE SET NULL, which is a no-op when foreign_keys is OFF.
+    ///
+    /// The project's own AI artifacts — its chat conversations and its stored
+    /// brief — go the other way: they are about the folder, so they die with it.
+    /// Those DELETEs are explicit for the same reason the UPDATE above is, and
+    /// they run children-first so the order holds with or without FK support.
     pub async fn delete(pool: &SqlitePool, id: &str) -> Result<bool, SqlxError> {
         let mut tx = pool.begin().await?;
         sqlx::query("UPDATE meetings SET project_id = NULL WHERE project_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM project_chat_messages WHERE project_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM project_chat_threads WHERE project_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM project_summaries WHERE project_id = ?")
             .bind(id)
             .execute(&mut *tx)
             .await?;

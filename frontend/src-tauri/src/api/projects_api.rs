@@ -136,6 +136,14 @@ pub async fn api_delete_project<R: Runtime>(
     project_id: String,
 ) -> Result<(), String> {
     let pool = state.db_manager.pool();
+
+    // Stop any brief still being generated for this project first. The row goes
+    // away with the project either way, but without this the LLM calls keep
+    // running — and paying — against something that no longer exists.
+    crate::summary::service::SummaryService::cancel_summary(
+        &crate::summary::project_service::project_cancellation_key(&project_id),
+    );
+
     let deleted = ProjectsRepository::delete(pool, &project_id)
         .await
         .map_err(|e| format!("Failed to delete project: {}", e))?;

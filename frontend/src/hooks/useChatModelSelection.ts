@@ -106,6 +106,11 @@ export function useChatModelSelection() {
       ...modelConfig,
       provider: nextProvider,
       model: nextModel,
+      // The picker only chooses which model answers; it never edits keys.
+      // modelConfig.apiKey holds the *previous* provider key (Settings puts it
+      // there), so carrying it over would file it under the new provider both
+      // in the settings row and in the in-memory key map.
+      apiKey: null,
     };
     setModelConfig(next);
     await persistModelChange(next);

@@ -77,6 +77,8 @@ pub struct ModelConfig {
     pub api_key: Option<String>,
     #[serde(rename = "ollamaEndpoint")]
     pub ollama_endpoint: Option<String>,
+    #[serde(rename = "lmStudioEndpoint")]
+    pub lm_studio_endpoint: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -299,26 +301,28 @@ pub async fn api_get_model_config<R: Runtime>(
                 &config.whisper_model,
                 &config.ollama_endpoint
             );
-            match SettingsRepository::get_api_key(pool, &config.provider).await {
-                Ok(api_key) => {
-                    log_info!("Successfully retrieved model config and API key.");
-                    Ok(Some(ModelConfig {
-                        provider: config.provider,
-                        model: config.model,
-                        whisper_model: config.whisper_model,
-                        api_key,
-                        ollama_endpoint: config.ollama_endpoint,
-                    }))
-                }
+            // A missing or unreadable API key must never sink the whole config:
+            // dropping it here would leave the UI on its hard-coded ollama
+            // defaults and silently discard the saved provider/model.
+            let api_key = match SettingsRepository::get_api_key(pool, &config.provider).await {
+                Ok(api_key) => api_key,
                 Err(e) => {
-                    log_error!(
-                        "Failed to get API key for provider {}: {}",
+                    log_warn!(
+                        "Failed to get API key for provider {}: {} - returning config without it",
                         &config.provider,
                         e
                     );
-                    Err(e.to_string())
+                    None
                 }
-            }
+            };
+            Ok(Some(ModelConfig {
+                provider: config.provider,
+                model: config.model,
+                whisper_model: config.whisper_model,
+                api_key,
+                ollama_endpoint: config.ollama_endpoint,
+                lm_studio_endpoint: config.lm_studio_endpoint,
+            }))
         }
         Ok(None) => {
             log_warn!("⚠️ No model config found in database - database may be empty or settings table not initialized");

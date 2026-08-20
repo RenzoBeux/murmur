@@ -90,7 +90,9 @@ impl SettingsRepository {
             "ollama" => "ollamaApiKey",
             "groq" => "groqApiKey",
             "openrouter" => "openRouterApiKey",
-            "builtin-ai" => return Ok(()), // No API key needed
+            // Keyless providers: the local servers need nothing, and the ChatGPT
+            // subscription authenticates with OAuth tokens, not a settings column.
+            "builtin-ai" | "lmstudio" | "chatgpt-subscription" => return Ok(()),
             _ => {
                 return Err(sqlx::Error::Protocol(
                     format!("Invalid provider: {}", provider).into(),
@@ -128,7 +130,9 @@ impl SettingsRepository {
             "groq" => "groqApiKey",
             "claude" => "anthropicApiKey",
             "openrouter" => "openRouterApiKey",
-            "builtin-ai" => return Ok(None), // No API key needed
+            // Keyless providers: the local servers need nothing, and the ChatGPT
+            // subscription authenticates with OAuth tokens, not a settings column.
+            "builtin-ai" | "lmstudio" | "chatgpt-subscription" => return Ok(None),
             _ => {
                 return Err(sqlx::Error::Protocol(
                     format!("Invalid provider: {}", provider).into(),
@@ -287,7 +291,9 @@ impl SettingsRepository {
             "groq" => "groqApiKey",
             "claude" => "anthropicApiKey",
             "openrouter" => "openRouterApiKey",
-            "builtin-ai" => return Ok(()), // No API key needed
+            // Keyless providers: the local servers need nothing, and the ChatGPT
+            // subscription authenticates with OAuth tokens, not a settings column.
+            "builtin-ai" | "lmstudio" | "chatgpt-subscription" => return Ok(()),
             _ => {
                 return Err(sqlx::Error::Protocol(
                     format!("Invalid provider: {}", provider).into(),
@@ -382,5 +388,78 @@ impl SettingsRepository {
         .await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::test_support::migrated_pool;
+
+    /// Providers with no API key column must round-trip: get_api_key returning
+    /// an error for them used to make api_get_model_config fail outright, so
+    /// the app fell back to its ollama defaults on every restart.
+    #[tokio::test]
+    async fn keyless_providers_round_trip() {
+        let pool = migrated_pool().await;
+
+        for (provider, model) in [
+            ("chatgpt-subscription", "gpt-5.5"),
+            ("lmstudio", "qwen2.5-7b-instruct"),
+            ("builtin-ai", "local"),
+        ] {
+            SettingsRepository::save_model_config(&pool, provider, model, "large-v3", None, None)
+                .await
+                .unwrap();
+
+            let key = SettingsRepository::get_api_key(&pool, provider)
+                .await
+                .unwrap_or_else(|e| panic!("{provider} must not error on key lookup: {e}"));
+            assert!(key.is_none(), "{provider} has no API key column");
+
+            // Saving a stray key for these is a no-op, not an error.
+            SettingsRepository::save_api_key(&pool, provider, "leftover")
+                .await
+                .unwrap();
+
+            let saved = SettingsRepository::get_model_config(&pool)
+                .await
+                .unwrap()
+                .expect("config row");
+            assert_eq!(saved.provider, provider);
+            assert_eq!(saved.model, model);
+        }
+    }
+
+    #[tokio::test]
+    async fn lm_studio_endpoint_survives_a_save() {
+        let pool = migrated_pool().await;
+        SettingsRepository::save_model_config(
+            &pool,
+            "lmstudio",
+            "qwen2.5-7b-instruct",
+            "large-v3",
+            None,
+            Some("http://192.168.1.10:1234"),
+        )
+        .await
+        .unwrap();
+
+        let saved = SettingsRepository::get_model_config(&pool)
+            .await
+            .unwrap()
+            .expect("config row");
+        assert_eq!(
+            saved.lm_studio_endpoint.as_deref(),
+            Some("http://192.168.1.10:1234")
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_provider_is_still_rejected() {
+        let pool = migrated_pool().await;
+        assert!(SettingsRepository::get_api_key(&pool, "not-a-provider")
+            .await
+            .is_err());
     }
 }

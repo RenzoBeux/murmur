@@ -67,6 +67,8 @@ mod tests {
             ("transcripts", "audio_start_time"),
             ("summary_processes", "result_backup"),
             ("chat_messages", "thread_id"),
+            ("project_chat_messages", "thread_id"),
+            ("project_summaries", "coverage_fingerprint"),
         ] {
             assert!(
                 column_exists(&pool, table, column).await,
@@ -82,6 +84,9 @@ mod tests {
             "meeting_tags",
             "meeting_attachments",
             "projects",
+            "project_chat_threads",
+            "project_chat_messages",
+            "project_summaries",
         ] {
             let n: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
                 .fetch_one(&pool)

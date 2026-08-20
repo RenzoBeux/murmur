@@ -652,6 +652,7 @@ pub fn run() {
             api::projects_api::api_get_project_meetings,
             api::projects_api::api_assign_meetings_to_project,
             api::projects_api::api_get_meeting_project,
+            api::projects_api::api_set_project_context_notes,
             api::api_add_meeting_tag,
             api::api_remove_meeting_tag,
             api::api_get_meeting_tags,
@@ -693,6 +694,19 @@ pub fn run() {
             api::chat_api::api_send_live_chat_message,
             api::chat_api::api_get_live_chat_history,
             api::chat_api::api_clear_live_chat_history,
+            // Project chat commands
+            api::project_chat_api::api_send_project_chat_message,
+            api::project_chat_api::api_get_project_chat_history,
+            api::project_chat_api::api_clear_project_chat_history,
+            api::project_chat_api::api_list_project_chat_threads,
+            api::project_chat_api::api_create_project_chat_thread,
+            api::project_chat_api::api_delete_project_chat_thread,
+            api::project_chat_api::api_set_project_chat_thread_grounding,
+            api::project_chat_api::api_project_chat_context,
+            // Project summary commands
+            api::project_summary_api::api_get_project_summary,
+            api::project_summary_api::api_generate_project_summary,
+            api::project_summary_api::api_cancel_project_summary,
             // Attachment commands
             api::attachments_api::api_add_attachments,
             api::attachments_api::api_add_attachments_from_paths,

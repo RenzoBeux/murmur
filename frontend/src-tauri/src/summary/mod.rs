@@ -41,6 +41,9 @@ pub mod summary_engine;
 pub mod web_search;
 pub mod template_commands;
 pub mod templates;
+pub mod project_prompts;
+pub mod project_service;
+pub mod text_budget;
 
 // Re-export Tauri commands (with their generated __cmd__ variants)
 pub use commands::{

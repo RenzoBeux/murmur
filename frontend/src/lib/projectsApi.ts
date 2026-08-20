@@ -13,6 +13,11 @@ export interface Project {
    * the picker existed — the UI derives a stable color from the id then.
    */
   color: string | null;
+  /**
+   * Free-form background the user wrote for the AI, from the Notes tab. Distinct
+   * from `description`, which is the short label the project cards render.
+   */
+  contextNotes: string | null;
   createdAt: string;
   updatedAt: string;
   /** Live (non-trashed) meetings filed under this project. */
@@ -112,6 +117,20 @@ export async function assignMeetingsToProject(
 
 export async function getMeetingProject(meetingId: string): Promise<Project | null> {
   return invoke<Project | null>('api_get_meeting_project', { meetingId });
+}
+
+/**
+ * Save the project's context notes. Blank clears them.
+ *
+ * Its own call rather than part of `updateProject` because the Notes tab
+ * autosaves while you type — routing that through the edit payload would rewrite
+ * name, description and color on every keystroke.
+ */
+export async function setProjectContextNotes(
+  projectId: string,
+  notes: string | null,
+): Promise<void> {
+  await invoke('api_set_project_context_notes', { projectId, notes });
 }
 
 /**

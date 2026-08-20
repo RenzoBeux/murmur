@@ -22,6 +22,9 @@ pub struct Project {
     /// Palette slug, or None when the project predates the color picker — the
     /// UI derives a stable color from the id in that case.
     pub color: Option<String>,
+    /// Free-form background the user wrote for the AI, from the Notes tab.
+    #[serde(rename = "contextNotes")]
+    pub context_notes: Option<String>,
     #[serde(rename = "createdAt")]
     pub created_at: String,
     #[serde(rename = "updatedAt")]
@@ -38,6 +41,7 @@ impl Project {
             name: model.name,
             description: model.description,
             color: model.color,
+            context_notes: model.context_notes,
             created_at: model.created_at.to_rfc3339(),
             updated_at: model.updated_at.to_rfc3339(),
             meeting_count,
@@ -136,6 +140,14 @@ pub async fn api_delete_project<R: Runtime>(
     project_id: String,
 ) -> Result<(), String> {
     let pool = state.db_manager.pool();
+
+    // Stop any brief still being generated for this project first. The row goes
+    // away with the project either way, but without this the LLM calls keep
+    // running — and paying — against something that no longer exists.
+    crate::summary::service::SummaryService::cancel_summary(
+        &crate::summary::project_service::project_cancellation_key(&project_id),
+    );
+
     let deleted = ProjectsRepository::delete(pool, &project_id)
         .await
         .map_err(|e| format!("Failed to delete project: {}", e))?;
@@ -143,6 +155,29 @@ pub async fn api_delete_project<R: Runtime>(
         return Err(format!("Project not found: {}", project_id));
     }
     log_info!("Deleted project {}", project_id);
+    Ok(())
+}
+
+/// Save the project's context notes — the background the AI reads.
+///
+/// Its own command rather than part of `api_update_project` because the Notes
+/// tab autosaves while you type: routing that through the create/edit payload
+/// would rewrite name, description and color on every keystroke, and would race
+/// the edit dialog if both were open.
+#[tauri::command]
+pub async fn api_set_project_context_notes<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+    notes: Option<String>,
+) -> Result<(), String> {
+    let pool = state.db_manager.pool();
+    let saved = ProjectsRepository::set_context_notes(pool, &project_id, notes.as_deref())
+        .await
+        .map_err(|e| format!("Failed to save project notes: {}", e))?;
+    if !saved {
+        return Err(format!("Project not found: {}", project_id));
+    }
     Ok(())
 }
 

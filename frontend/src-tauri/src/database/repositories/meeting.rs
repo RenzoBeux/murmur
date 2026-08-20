@@ -510,7 +510,73 @@ impl MeetingsRepository {
         .await?;
         Ok(rows)
     }
+
+    /// Transcript size per meeting: `(characters, segments)`.
+    ///
+    /// Lets a caller decide whether a set of transcripts fits a context budget
+    /// *before* loading any of them. `LENGTH()` on TEXT is characters in SQLite,
+    /// which is the unit the budget is expressed in.
+    pub async fn get_transcript_sizes(
+        pool: &SqlitePool,
+        meeting_ids: &[String],
+    ) -> Result<HashMap<String, (i64, i64)>, SqlxError> {
+        let mut out = HashMap::new();
+        for chunk in meeting_ids.chunks(BIND_CHUNK) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT meeting_id, COALESCE(SUM(LENGTH(transcript)), 0), COUNT(*) \
+                 FROM transcripts WHERE meeting_id IN ({placeholders}) GROUP BY meeting_id"
+            );
+            let mut q = sqlx::query_as::<_, (String, i64, i64)>(&sql);
+            for id in chunk {
+                q = q.bind(id);
+            }
+            for (id, chars, segments) in q.fetch_all(pool).await? {
+                out.insert(id, (chars, segments));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Every transcript segment for several meetings, in one query per batch.
+    ///
+    /// The only bulk multi-meeting transcript read in the codebase. Project-level
+    /// context needs all of them at once, and doing it per meeting would mean one
+    /// transaction and one full materialization per meeting on every chat turn.
+    /// Follows `get_meeting_durations`' precedent of one aggregate over many
+    /// meetings rather than N calls.
+    ///
+    /// Ordered `audio_start_time ASC, rowid ASC` — the rowid tiebreaker matters
+    /// for segments written before the audio-timing columns existed, which all
+    /// share a NULL `audio_start_time` and would otherwise come back in
+    /// arbitrary order.
+    pub async fn get_transcripts_for_meetings(
+        pool: &SqlitePool,
+        meeting_ids: &[String],
+    ) -> Result<HashMap<String, Vec<Transcript>>, SqlxError> {
+        let mut out: HashMap<String, Vec<Transcript>> = HashMap::new();
+        for chunk in meeting_ids.chunks(BIND_CHUNK) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT * FROM transcripts WHERE meeting_id IN ({placeholders}) \
+                 ORDER BY meeting_id, audio_start_time ASC, rowid ASC"
+            );
+            let mut q = sqlx::query_as::<_, Transcript>(&sql);
+            for id in chunk {
+                q = q.bind(id);
+            }
+            for row in q.fetch_all(pool).await? {
+                out.entry(row.meeting_id.clone()).or_default().push(row);
+            }
+        }
+        Ok(out)
+    }
 }
+
+/// Bound parameters per statement when expanding an `IN (...)` list. SQLite's
+/// default limit is 999; batching well under it means a project with hundreds of
+/// meetings can never be the thing that breaks these queries.
+const BIND_CHUNK: usize = 500;
 
 async fn delete_meeting_with_transaction(
     transaction: &mut SqliteConnection,

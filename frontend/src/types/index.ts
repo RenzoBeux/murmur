@@ -35,11 +35,27 @@ export interface ChatAnswerMetadata {
   };
   sources?: WebSource[];
   search_count?: number;
+  // Project chat only: which of the project's meetings were actually in front
+  // of the model. Absent on every meeting-chat message.
+  project_context?: ProjectChatContextInfo;
+}
+
+// What a project answer could actually see. Recorded per answer because a
+// project's coverage is not obvious from the text.
+export interface ProjectChatContextInfo {
+  meetings_total: number;
+  meetings_with_summary: number;
+  meetings_with_transcript: number;
+  truncated: boolean;
 }
 
 export interface ChatMessage {
   id: string;
-  meeting_id: string;
+  // Exactly one of these is set, by scope. Both are optional so a single
+  // message type serves the meeting chat and the project chat; nothing in the
+  // UI reads either field.
+  meeting_id?: string | null;
+  project_id?: string | null;
   thread_id?: string | null;
   role: 'user' | 'assistant';
   content: string;
@@ -51,7 +67,8 @@ export interface ChatMessage {
 // Ask-AI session during recording; 'post' = created from the Chat tab.
 export interface ChatThread {
   id: string;
-  meeting_id: string;
+  meeting_id?: string | null;
+  project_id?: string | null;
   title: string;
   origin: 'live' | 'post';
   grounding_mode: ChatGrounding;

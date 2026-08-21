@@ -553,7 +553,37 @@ impl WhisperEngine {
 
         repeated_words as f32 / total_words
     }
-    
+
+    /// Meeting-context prompt for the anti-hallucination nudge, written in the language
+    /// being transcribed.
+    ///
+    /// whisper.cpp prepends the initial prompt to the decoder as `<|startofprev|>` text —
+    /// the model reads it as "the transcript so far". An English sentence there makes it
+    /// keep writing English even when the language token is forced to `<|es|>`, so Spanish
+    /// speech comes back translated (and only on some chunks, because whisper drops the
+    /// prompt once temperature fallback pushes t >= 0.5). Feed the nudge in the target
+    /// language instead, and skip it entirely for languages we have no wording for —
+    /// no prompt is always better than an English one.
+    fn meeting_context_prompt(language: Option<&str>) -> Option<&'static str> {
+        match language {
+            // Translation mode emits English, so an English prompt is the correct prior.
+            Some("en") | Some("auto-translate") => {
+                Some("The following is a transcript of a meeting conversation.")
+            }
+            Some("es") => Some("Lo siguiente es la transcripción de una reunión de trabajo."),
+            Some("pt") => Some("A seguir está a transcrição de uma reunião de trabalho."),
+            Some("fr") => Some("Ce qui suit est la transcription d'une réunion de travail."),
+            Some("de") => Some("Es folgt die Transkription einer Arbeitsbesprechung."),
+            Some("it") => Some("Quella che segue è la trascrizione di una riunione di lavoro."),
+            Some("ca") => Some("El que segueix és la transcripció d'una reunió de treball."),
+            Some("gl") => Some("O seguinte é a transcrición dunha reunión de traballo."),
+            Some("nl") => Some("Hieronder volgt de transcriptie van een werkvergadering."),
+            // "auto" (detect and keep the original language) and everything else: no prompt,
+            // so nothing biases the decoder towards a language the speaker isn't using.
+            _ => None,
+        }
+    }
+
     /// Transcribe audio with streaming support for partial results and adaptive quality
     pub async fn transcribe_audio_with_confidence(&self, audio_data: Vec<f32>, language: Option<String>) -> Result<(String, f32, bool)> {
         let ctx_lock = self.current_context.read().await;
@@ -584,10 +614,13 @@ impl WhisperEngine {
 
         // Steer Whisper away from YouTube-style hallucinations ("thanks for watching",
         // "gracias por ver el video", "like and subscribe"). Whisper's LM is heavily
-        // primed by YouTube subtitle training data, and a neutral meeting-context prompt
-        // shifts its priors. Also disable cross-chunk context to prevent a single
+        // primed by YouTube subtitle training data, and a meeting-context prompt in the
+        // language being transcribed shifts its priors without dragging the output into
+        // another language. Also disable cross-chunk context to prevent a single
         // hallucination from cascading into subsequent segments.
-        params.set_initial_prompt("The following is a transcript of a meeting conversation.");
+        if let Some(prompt) = Self::meeting_context_prompt(language.as_deref()) {
+            params.set_initial_prompt(prompt);
+        }
         params.set_no_context(true);
 
         // CRITICAL: Disable timestamp tokens to prevent whisper.cpp chunking heuristics
@@ -713,10 +746,13 @@ impl WhisperEngine {
 
         // Steer Whisper away from YouTube-style hallucinations ("thanks for watching",
         // "gracias por ver el video", "like and subscribe"). Whisper's LM is heavily
-        // primed by YouTube subtitle training data, and a neutral meeting-context prompt
-        // shifts its priors. Also disable cross-chunk context to prevent a single
+        // primed by YouTube subtitle training data, and a meeting-context prompt in the
+        // language being transcribed shifts its priors without dragging the output into
+        // another language. Also disable cross-chunk context to prevent a single
         // hallucination from cascading into subsequent segments.
-        params.set_initial_prompt("The following is a transcript of a meeting conversation.");
+        if let Some(prompt) = Self::meeting_context_prompt(language.as_deref()) {
+            params.set_initial_prompt(prompt);
+        }
         params.set_no_context(true);
 
         // CRITICAL: Disable timestamp tokens to prevent whisper.cpp chunking heuristics
